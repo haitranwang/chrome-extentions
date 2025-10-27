@@ -1,10 +1,49 @@
 // Content script for dexscreener.com
 
-// Watch for new token listings
+// Performance optimization: Throttle and debounce utilities
+function throttle(func, limit) {
+  let inThrottle;
+  return function(...args) {
+    if (!inThrottle) {
+      func.apply(this, args);
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  };
+}
+
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+}
+
+// Cache for token links to avoid repeated DOM queries
+let cachedTokenLinks = null;
+let cacheTimestamp = 0;
+const CACHE_DURATION = 2000; // Cache for 2 seconds
+
+// Invalidate cache
+function invalidateTokenCache() {
+  cachedTokenLinks = null;
+  cacheTimestamp = 0;
+}
+
+// Watch for new token listings with throttling
 function watchForTokens() {
-  const observer = new MutationObserver(() => {
+  // Throttled function that runs at most once per second for token processing
+  // But countdown updates should run more frequently
+  const throttledCheck = throttle(() => {
+    // Invalidate cache when DOM changes significantly
+    invalidateTokenCache();
     checkMatchingTokens();
-    // Also update countdown displays when DOM changes
+  }, 1000);
+
+  const observer = new MutationObserver(() => {
+    throttledCheck();
+    // Update countdowns immediately without throttling
     updateCountdownDisplays();
   });
 
@@ -13,6 +52,8 @@ function watchForTokens() {
     childList: true,
     subtree: true
   });
+
+  return observer;
 }
 
 // Supported blockchain chains
@@ -53,12 +94,28 @@ function checkMatchingTokens() {
   });
 }
 
+// Track last processed tokens to avoid reprocessing
+let lastProcessedTokens = new Set();
+let lastProcessCheck = 0;
+const PROCESS_INTERVAL = 2000; // Only process every 2 seconds max
+
 function processTokens(currentChain, maxTabs) {
+  const now = Date.now();
+
+  // Skip if we've recently processed tokens
+  if (now - lastProcessCheck < PROCESS_INTERVAL) {
+    return;
+  }
+  lastProcessCheck = now;
+
   // Multiple strategies to find token links
   const tokenLinks = findTokenLinks(currentChain);
   const processedTokens = new Set(); // Track tokens processed in this call
   let messageCount = 0;
   const MAX_MESSAGES = Math.min(maxTabs, 50); // Don't send more than maxTabs
+
+  // Known non-token page identifiers to exclude
+  const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
 
   tokenLinks.forEach(link => {
     if (messageCount >= MAX_MESSAGES) return; // Stop if we've sent too many messages
@@ -72,6 +129,19 @@ function processTokens(currentChain, maxTabs) {
     let match = href.match(`/${currentChain}/([A-Za-z0-9]+)`);
     if (match) {
       tokenId = match[1];
+
+      // CRITICAL FIX: Validate tokenId length - real token IDs are long
+      // Exclude short strings like "moonit", "watchlist", etc.
+      if (tokenId && tokenId.length < 20) {
+        // Token IDs are typically 30-50+ characters
+        // Short strings are navigation links, not tokens
+        tokenId = null;
+      }
+
+      // Also check if it's a known excluded path
+      if (tokenId && excludedPaths.some(path => href.toLowerCase().includes(path))) {
+        tokenId = null;
+      }
     }
 
     // Pattern 2: /token/SOMEID (some pages use /token/)
@@ -79,6 +149,9 @@ function processTokens(currentChain, maxTabs) {
       match = href.match(/\/token\/([A-Za-z0-9]+)/);
       if (match) {
         tokenId = match[1];
+        if (tokenId && tokenId.length < 20) {
+          tokenId = null;
+        }
       }
     }
 
@@ -96,6 +169,11 @@ function processTokens(currentChain, maxTabs) {
       // Only process each token once per check
       if (!processedTokens.has(fullTokenId)) {
         processedTokens.add(fullTokenId);
+
+        // Record detection time for this token
+        if (!tokenDetectionTime.has(tokenId)) {
+          tokenDetectionTime.set(tokenId, Date.now());
+        }
 
         // Open tab for detected token with chain info
         chrome.runtime.sendMessage({
@@ -127,25 +205,56 @@ function processTokens(currentChain, maxTabs) {
   }
 }
 
-// Enhanced token link finding with multiple strategies
-function findTokenLinks(chain) {
+// Enhanced token link finding with multiple strategies and caching
+function findTokenLinks(chain, forceRefresh = false) {
+  const now = Date.now();
+
+  // Return cached results if still valid (within cache duration)
+  if (!forceRefresh && cachedTokenLinks && (now - cacheTimestamp) < CACHE_DURATION) {
+    return cachedTokenLinks;
+  }
+
   const links = new Set();
 
-  // Strategy 1: Direct chain links
-  document.querySelectorAll(`a[href*="/${chain}/"]`).forEach(link => links.add(link));
+  // Known non-token page identifiers to exclude
+  const excludedPaths = ['moonit', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
 
-  // Strategy 2: Token links (some pages use /token/)
-  document.querySelectorAll('a[href*="/token/"]').forEach(link => links.add(link));
+  // OPTIMIZATION: Get all links once and filter, instead of multiple querySelectorAll calls
+  const allLinks = document.querySelectorAll('a[href]');
 
-  // Strategy 3: Look for links containing long alphanumeric IDs (likely token addresses)
-  document.querySelectorAll('a[href]').forEach(link => {
+  allLinks.forEach(link => {
     const href = link.getAttribute('href');
-    if (href && href.match(/([A-Za-z0-9]{30,})/) && !href.includes('/new-pairs')) {
+    if (!href) return;
+
+    // Strategy 1: Direct chain links
+    if (href.includes(`/${chain}/`) && !excludedPaths.some(path => href.toLowerCase().includes(path))) {
+      const match = href.match(`/${chain}/([A-Za-z0-9]+)`);
+      if (match && match[1].length >= 20) {
+        links.add(link);
+        return; // Found, skip to next link
+      }
+    }
+
+    // Strategy 2: Token links
+    if (href.includes('/token/')) {
+      const match = href.match(/\/token\/([A-Za-z0-9]+)/);
+      if (match && match[1].length >= 20) {
+        links.add(link);
+        return;
+      }
+    }
+
+    // Strategy 3: Long alphanumeric IDs
+    if (href.match(/([A-Za-z0-9]{30,})/) && !href.includes('/new-pairs')) {
       links.add(link);
     }
   });
 
-  return Array.from(links);
+  // Cache the results
+  cachedTokenLinks = Array.from(links);
+  cacheTimestamp = now;
+
+  return cachedTokenLinks;
 }
 
 // Get token ID from a link element
@@ -153,15 +262,31 @@ function getTokenIdFromLink(link, chain) {
   const href = link.getAttribute('href');
   if (!href) return null;
 
+  // Known non-token page identifiers to exclude
+  const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
+
   // Try multiple patterns to extract token ID
   let match = href.match(`/${chain}/([A-Za-z0-9]+)`);
-  if (match) return match[1];
+  if (match) {
+    let tokenId = match[1];
+    // Validate tokenId length - real token IDs are long
+    if (tokenId && tokenId.length >= 20 && !excludedPaths.some(path => href.toLowerCase().includes(path))) {
+      return tokenId;
+    }
+  }
 
   match = href.match(/\/token\/([A-Za-z0-9]+)/);
-  if (match) return match[1];
+  if (match) {
+    let tokenId = match[1];
+    if (tokenId && tokenId.length >= 20) {
+      return tokenId;
+    }
+  }
 
   match = href.match(/([A-Za-z0-9]{30,})/);
-  if (match) return match[1];
+  if (match) {
+    return match[1];
+  }
 
   return null;
 }
@@ -186,56 +311,176 @@ function fetchOpenedTokens() {
   });
 }
 
-// Add countdown timer to a token row
-function addCountdownTimer(link, tokenId, cooldownMs, timestamp) {
-  // Remove existing timer if any
-  const existingTimer = link.querySelector('.ds-token-timer');
-  if (existingTimer) existingTimer.remove();
+// Format time as HH:MM:SS
+function formatTime(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
 
-  // Create timer element
+// Add countdown timer to a token row - now displays detection time countdown
+function addCountdownTimer(link, tokenId) {
+  // Find the parent row to attach timer to (more flexible selector)
+  const row = link.closest('tr');
+  if (!row) {
+    console.log('❌ No row found for token:', tokenId);
+    return;
+  }
+
+  // Look for existing timer in the row
+  const existingTimer = row.querySelector('.ds-token-timer');
+  if (existingTimer) {
+    // Just update the existing timer element
+    const timer = existingTimer;
+
+    // Get detection time or default to 2 hours ago (for countdown)
+    const detectionTime = tokenDetectionTime.get(tokenId) || Date.now() - (2 * 60 * 60 * 1000);
+    const now = Date.now();
+    const elapsed = Math.floor((now - detectionTime) / 1000); // seconds since detection
+    const countdownSeconds = Math.max(0, (2 * 60 * 60) - elapsed); // 2 hours - elapsed
+
+    // Format as HH:MM:SS
+    timer.textContent = formatTime(countdownSeconds);
+
+    // Update title with time since discovery
+    if (elapsed < 3600) {
+      timer.title = `Discovered ${formatTime(elapsed)} ago`;
+    } else if (elapsed < 7200) {
+      const hours = Math.floor(elapsed / 3600);
+      const minutes = Math.floor((elapsed % 3600) / 60);
+      timer.title = `Discovered ${hours}h ${minutes}m ago`;
+    } else {
+      const hours = Math.floor(elapsed / 3600);
+      timer.title = `Discovered ${hours}h ago`;
+    }
+
+    // Change color based on how recent the discovery is
+    if (elapsed < 300) { // Less than 5 minutes - very recent (green)
+      timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
+      timer.style.opacity = '1';
+    } else if (elapsed < 1800) { // Less than 30 minutes - recent (blue)
+      timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
+      timer.style.opacity = '1';
+    } else if (elapsed < 3600) { // Less than 1 hour - moderate (yellow)
+      timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+      timer.style.opacity = '1';
+    } else if (elapsed < 5400) { // Less than 1.5 hours (orange)
+      timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
+      timer.style.opacity = '0.9';
+    } else if (elapsed < 7200) { // Less than 2 hours (red)
+      timer.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+      timer.style.opacity = '0.8';
+    } else { // Over 2 hours - show as expired
+      timer.textContent = 'EXPIRED';
+      timer.style.background = 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
+      timer.style.opacity = '0.6';
+    }
+
+    return;
+  }
+
+  // Create new timer element
   const timer = document.createElement('div');
   timer.className = 'ds-token-timer';
   timer.style.cssText = `
-    display: inline-block;
-    padding: 2px 8px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
+    display: inline-block !important;
+    padding: 3px 10px;
+    background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+    color: white !important;
     border-radius: 12px;
     font-size: 11px;
-    font-weight: 600;
-    margin-left: 8px;
+    font-weight: 700;
+    margin-left: 10px;
     white-space: nowrap;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    letter-spacing: 0.5px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    z-index: 9999;
+    position: relative;
   `;
 
-  // Calculate and display time remaining
-  function updateTimer() {
-    const now = Date.now();
-    const elapsed = now - timestamp;
-    const remaining = cooldownMs - elapsed;
+  // Try multiple insertion strategies
+  let inserted = false;
 
-    if (remaining <= 0) {
-      timer.textContent = '✅ Ready';
-      timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
-      timer.style.cursor = 'pointer';
-      timer.title = 'Token is ready to be opened again';
-    } else {
-      const minutes = Math.floor(remaining / 60000);
-      const seconds = Math.floor((remaining % 60000) / 1000);
-      timer.textContent = `⏰ ${minutes}m ${seconds}s`;
-      timer.title = `Cooldown: ${minutes}m ${seconds}s remaining`;
+  // Strategy 1: Insert after the link text
+  try {
+    // Find the parent that might contain text nodes
+    const parentSpan = link.closest('span');
+    if (parentSpan && parentSpan.parentNode) {
+      parentSpan.parentNode.insertBefore(timer, parentSpan.nextSibling);
+      inserted = true;
+    }
+  } catch (e) {
+    console.log('Strategy 1 failed:', e);
+  }
 
-      // Change color based on time remaining
-      if (remaining < 60000) {
-        timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
-      } else if (remaining < 300000) {
-        timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
+  // Strategy 2: Append to td cell
+  if (!inserted) {
+    try {
+      const tokenNameCell = link.closest('td');
+      if (tokenNameCell) {
+        tokenNameCell.appendChild(timer);
+        inserted = true;
       }
+    } catch (e) {
+      console.log('Strategy 2 failed:', e);
     }
   }
 
-  updateTimer();
-  link.appendChild(timer);
+  // Strategy 3: Fallback - append to link
+  if (!inserted) {
+    try {
+      link.appendChild(timer);
+      inserted = true;
+    } catch (e) {
+      console.log('Strategy 3 failed:', e);
+    }
+  }
+
+  if (!inserted) {
+    console.log('❌ Failed to insert timer for token:', tokenId);
+    return;
+  }
+
+  console.log('✅ Created timer for token:', tokenId);
+
+  // Initial update with same logic as update above
+  const detectionTime = tokenDetectionTime.get(tokenId) || Date.now() - (2 * 60 * 60 * 1000);
+  const now = Date.now();
+  const elapsed = Math.floor((now - detectionTime) / 1000);
+  const countdownSeconds = Math.max(0, (2 * 60 * 60) - elapsed);
+
+  timer.textContent = formatTime(countdownSeconds);
+
+  if (elapsed < 3600) {
+    timer.title = `Discovered ${formatTime(elapsed)} ago`;
+  } else {
+    const hours = Math.floor(elapsed / 3600);
+    timer.title = `Discovered ${hours}h ago`;
+  }
+
+  // Set color
+  if (elapsed < 300) {
+    timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
+    timer.style.opacity = '1';
+  } else if (elapsed < 1800) {
+    timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
+    timer.style.opacity = '1';
+  } else if (elapsed < 3600) {
+    timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+    timer.style.opacity = '1';
+  } else if (elapsed < 5400) {
+    timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
+    timer.style.opacity = '0.9';
+  } else if (elapsed < 7200) {
+    timer.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+    timer.style.opacity = '0.8';
+  } else {
+    timer.textContent = 'EXPIRED';
+    timer.style.background = 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
+    timer.style.opacity = '0.6';
+  }
 }
 
 // Update countdown displays for all token rows
@@ -243,34 +488,43 @@ function updateCountdownDisplays() {
   const currentChain = detectChain();
   if (!currentChain) return;
 
-  // Find all token links
-  const tokenLinks = findTokenLinks(currentChain);
+  // Find all token links - force refresh to get latest
+  const tokenLinks = findTokenLinks(currentChain, true);
 
+  if (tokenLinks.length === 0) {
+    console.log('🔍 No token links found');
+    return;
+  }
+
+  let timerCount = 0;
   tokenLinks.forEach(link => {
     const tokenId = getTokenIdFromLink(link, currentChain);
     if (!tokenId) return;
 
-    // Check if this token is in cooldown
-    const tokenData = openedTokensData.get(tokenId);
-    if (tokenData) {
-      addCountdownTimer(link, tokenId, tokenData.cooldownMs, tokenData.timestamp);
-    }
+    // Show timer for all detected tokens
+    addCountdownTimer(link, tokenId);
+    timerCount++;
   });
+
+  if (timerCount > 0) {
+    console.log(`⏰ Updated ${timerCount} countdown timers`);
+  }
 }
 
-// Start countdown timer updates
+// Start countdown timer updates with optimized frequency
 function startCountdownUpdates() {
   if (countdownInterval) return;
 
-  // Update every second
+  // Update every 1 second for smooth countdown display (HH:MM:SS)
   countdownInterval = setInterval(() => {
     updateCountdownDisplays();
   }, 1000);
 
-  // Also fetch fresh data every 5 seconds
+  // Fetch fresh data every 10 seconds instead of 5 seconds
+  fetchOpenedTokens(); // Initial fetch
   setInterval(() => {
     fetchOpenedTokens();
-  }, 5000);
+  }, 10000); // Reduced from 5000 to 10000
 }
 
 // Track URL changes and opened filter URLs
@@ -280,6 +534,9 @@ let openedFilterUrls = new Set();
 // Countdown timer functionality
 let openedTokensData = new Map(); // tokenId -> {timestamp, cooldownMs}
 let countdownInterval = null;
+
+// Track token detection time (when token was first detected)
+let tokenDetectionTime = new Map(); // tokenId -> detectionTimestamp
 
 // Detect URL changes and open new filter tabs
 function detectUrlChange() {
@@ -324,6 +581,9 @@ function detectUrlChange() {
   lastUrl = currentUrl;
 }
 
+// Track if we have a main observer to avoid duplicates
+let mainObserver = null;
+
 // Initialize
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init);
@@ -340,16 +600,22 @@ function init() {
   console.log('🔗 Detected Chain:', detectedChain || 'None');
 
   if (detectedChain) {
-    // Run initial token check immediately
+    // Run initial token check and countdown setup
     setTimeout(() => {
       console.log('🔍 Running initial token check...');
       checkMatchingTokens();
+      // Force update countdowns immediately
+      updateCountdownDisplays();
+      // Invalidate cache after initial check
+      cachedTokenLinks = null;
     }, 1000);
 
     // Start countdown timer updates
     setTimeout(() => {
       fetchOpenedTokens();
       startCountdownUpdates();
+      // Also trigger an immediate countdown update
+      updateCountdownDisplays();
     }, 1500);
   }
 
@@ -360,17 +626,15 @@ function init() {
   detectUrlChange();
 }
 
-// Listen for URL changes (both SPA navigation and regular navigation)
-let urlCheckInterval = setInterval(detectUrlChange, 1000);
+// OPTIMIZATION: Debounced URL detection to avoid excessive checks
+const debouncedUrlCheck = debounce(detectUrlChange, 500);
 
-// Also use MutationObserver for SPA navigation
-new MutationObserver(() => {
-  detectUrlChange();
-}).observe(document, { subtree: true, childList: true });
+// Consolidated: Single setInterval with throttled URL check
+let urlCheckInterval = setInterval(debouncedUrlCheck, 2000); // Check every 2 seconds instead of 1
 
-// Listen for popstate (browser back/forward)
+// Listen for popstate (browser back/forward) - debounced
 window.addEventListener('popstate', () => {
-  setTimeout(detectUrlChange, 500);
+  setTimeout(debouncedUrlCheck, 300);
 });
 
 // Clean up interval when page unloads
@@ -378,5 +642,9 @@ window.addEventListener('beforeunload', () => {
   if (urlCheckInterval) {
     clearInterval(urlCheckInterval);
   }
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+  }
+  cachedTokenLinks = null; // Clear cache on unload
 });
 
