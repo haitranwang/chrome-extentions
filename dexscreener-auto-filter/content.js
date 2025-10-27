@@ -31,26 +31,29 @@ function invalidateTokenCache() {
   cacheTimestamp = 0;
 }
 
+// Flag to prevent recursive updates
+let isUpdatingDOM = false;
+
 // Watch for new token listings with throttling
 function watchForTokens() {
-  // Throttled function that runs at most once per second for token processing
-  // But countdown updates should run more frequently
+  // Only process token checks, not countdown updates
   const throttledCheck = throttle(() => {
-    // Invalidate cache when DOM changes significantly
-    invalidateTokenCache();
-    checkMatchingTokens();
-  }, 1000);
+    if (!isUpdatingDOM) {
+      invalidateTokenCache();
+      checkMatchingTokens();
+    }
+  }, 2000); // Check every 2 seconds
 
   const observer = new MutationObserver(() => {
+    // Only trigger token checking, not countdown updates
     throttledCheck();
-    // Update countdowns immediately without throttling
-    updateCountdownDisplays();
+    // Note: countdown updates are handled separately by setInterval
   });
 
   const targetNode = document.body;
   observer.observe(targetNode, {
     childList: true,
-    subtree: true
+    subtree: false // Only watch direct children, not entire subtree
   });
 
   return observer;
@@ -321,15 +324,31 @@ function formatTime(seconds) {
 
 // Add countdown timer to a token row - now displays detection time countdown
 function addCountdownTimer(link, tokenId) {
-  // Find the parent row to attach timer to (more flexible selector)
-  const row = link.closest('tr');
-  if (!row) {
-    console.log('❌ No row found for token:', tokenId);
+  // Validate link
+  if (!link || !link.href) {
     return;
   }
 
-  // Look for existing timer in the row
-  const existingTimer = row.querySelector('.ds-token-timer');
+  // Try multiple strategies to find the container
+  let container = link.closest('tr');
+
+  // If not in a table row, try finding other common containers
+  if (!container) {
+    container = link.closest('td');
+  }
+  if (!container) {
+    container = link.closest('[class*="row"]');
+  }
+  if (!container) {
+    container = link.parentElement;
+  }
+
+  if (!container) {
+    return;
+  }
+
+  // Look for existing timer in the container
+  const existingTimer = container.querySelector('.ds-token-timer');
   if (existingTimer) {
     // Just update the existing timer element
     const timer = existingTimer;
@@ -403,47 +422,54 @@ function addCountdownTimer(link, tokenId) {
   // Try multiple insertion strategies
   let inserted = false;
 
-  // Strategy 1: Insert after the link text
+  // Strategy 1: Find a good container (td, div with certain classes, etc.)
   try {
-    // Find the parent that might contain text nodes
-    const parentSpan = link.closest('span');
-    if (parentSpan && parentSpan.parentNode) {
-      parentSpan.parentNode.insertBefore(timer, parentSpan.nextSibling);
+    const tdCell = link.closest('td');
+    if (tdCell) {
+      tdCell.appendChild(timer);
       inserted = true;
     }
   } catch (e) {
-    console.log('Strategy 1 failed:', e);
+    // Silent fail
   }
 
-  // Strategy 2: Append to td cell
+  // Strategy 2: Insert after the link
   if (!inserted) {
     try {
-      const tokenNameCell = link.closest('td');
-      if (tokenNameCell) {
-        tokenNameCell.appendChild(timer);
+      if (link.parentNode) {
+        link.parentNode.insertBefore(timer, link.nextSibling);
         inserted = true;
       }
     } catch (e) {
-      console.log('Strategy 2 failed:', e);
+      // Silent fail
     }
   }
 
-  // Strategy 3: Fallback - append to link
+  // Strategy 3: Append to container
+  if (!inserted) {
+    try {
+      if (container) {
+        container.appendChild(timer);
+        inserted = true;
+      }
+    } catch (e) {
+      // Silent fail
+    }
+  }
+
+  // Strategy 4: Fallback - append to link as last resort
   if (!inserted) {
     try {
       link.appendChild(timer);
       inserted = true;
     } catch (e) {
-      console.log('Strategy 3 failed:', e);
+      // Silent fail
     }
   }
 
   if (!inserted) {
-    console.log('❌ Failed to insert timer for token:', tokenId);
     return;
   }
-
-  console.log('✅ Created timer for token:', tokenId);
 
   // Initial update with same logic as update above
   const detectionTime = tokenDetectionTime.get(tokenId) || Date.now() - (2 * 60 * 60 * 1000);
@@ -485,29 +511,38 @@ function addCountdownTimer(link, tokenId) {
 
 // Update countdown displays for all token rows
 function updateCountdownDisplays() {
-  const currentChain = detectChain();
-  if (!currentChain) return;
+  // Prevent recursive calls
+  if (isUpdatingDOM) return;
 
-  // Find all token links - force refresh to get latest
-  const tokenLinks = findTokenLinks(currentChain, true);
+  isUpdatingDOM = true;
 
-  if (tokenLinks.length === 0) {
-    console.log('🔍 No token links found');
-    return;
-  }
+  try {
+    const currentChain = detectChain();
+    if (!currentChain) return;
 
-  let timerCount = 0;
-  tokenLinks.forEach(link => {
-    const tokenId = getTokenIdFromLink(link, currentChain);
-    if (!tokenId) return;
+    // Find all token links - force refresh to get latest
+    const tokenLinks = findTokenLinks(currentChain, true);
 
-    // Show timer for all detected tokens
-    addCountdownTimer(link, tokenId);
-    timerCount++;
-  });
+    if (tokenLinks.length === 0) {
+      return;
+    }
 
-  if (timerCount > 0) {
-    console.log(`⏰ Updated ${timerCount} countdown timers`);
+    tokenLinks.forEach(link => {
+      const tokenId = getTokenIdFromLink(link, currentChain);
+      if (!tokenId) return;
+
+      // Show timer for all detected tokens
+      try {
+        addCountdownTimer(link, tokenId);
+      } catch (error) {
+        // Silent error handling
+      }
+    });
+  } finally {
+    // Allow updates after a brief delay
+    setTimeout(() => {
+      isUpdatingDOM = false;
+    }, 50);
   }
 }
 
@@ -515,16 +550,16 @@ function updateCountdownDisplays() {
 function startCountdownUpdates() {
   if (countdownInterval) return;
 
-  // Update every 1 second for smooth countdown display (HH:MM:SS)
+  // Update every 5 seconds to reduce load on browser
   countdownInterval = setInterval(() => {
     updateCountdownDisplays();
-  }, 1000);
+  }, 5000); // Reduced to 5 seconds
 
-  // Fetch fresh data every 10 seconds instead of 5 seconds
+  // Fetch fresh data every 30 seconds
   fetchOpenedTokens(); // Initial fetch
   setInterval(() => {
     fetchOpenedTokens();
-  }, 10000); // Reduced from 5000 to 10000
+  }, 30000); // Reduced frequency
 }
 
 // Track URL changes and opened filter URLs
