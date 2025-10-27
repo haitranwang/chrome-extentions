@@ -1,17 +1,28 @@
 # DexScreener Auto Token Opener Chrome Extension
 
-A streamlined Chrome extension that automatically opens new tabs for tokens detected on DexScreener.com.
+A Chrome extension that automatically opens tabs for tokens detected on DexScreener.com with advanced filtering and multi-chain support.
 
 > **Note**: This extension is part of the [Chrome Extensions Repository](../README.md). For repository structure and organization, see the main README.
 
 ## Features
 
-### Auto-open Token Tabs
-- Automatically opens new tabs for all Solana tokens detected on dexscreener.com
-- 15-minute cooldown period to prevent spam and duplicate tabs
-- Track opened tokens to avoid opening the same token multiple times
+### Multi-Chain Support
+- Works with 17 blockchain networks (Solana, BSC, Base, Ethereum, Polygon, and more)
+- Automatically detects the current chain from the page URL
+- Opens token pages with correct chain-specific URLs
+
+### Auto-Open Token Tabs
+- Automatically detects and opens tabs for tokens on any supported chain
+- Configurable cooldown period (default: 15 minutes)
+- Configurable maximum tabs limit (default: 10)
+- Tracks opened tokens to prevent duplicates
 - Opens tabs in background for uninterrupted browsing
-- Simple, no-configuration extension that just works
+
+### Filter URL Detection
+- Automatically opens new tabs when you change filter parameters in the URL
+- Compare different filter combinations side-by-side
+- Duplicate prevention for filter URLs
+- Supports all DexScreener filter parameters
 
 ## Installation
 
@@ -26,43 +37,61 @@ A streamlined Chrome extension that automatically opens new tabs for tokens dete
 
 ## Usage
 
-### Using the Extension
+### Basic Usage
 
 1. Load the extension in Chrome (see Installation)
-2. Navigate to [dexscreener.com](https://dexscreener.com)
-3. The extension automatically opens new tabs for Solana tokens detected on the page
-4. Tabs open in the background - no interruption to your browsing
-5. Same token won't open again for 15 minutes (cooldown period)
+2. Configure settings by clicking the extension icon (optional):
+   - Set cooldown period (1-60 minutes)
+   - Set maximum tabs (1-100)
+   - Click "Save"
+3. Navigate to [dexscreener.com](https://dexscreener.com) on any supported chain
+4. The extension automatically opens new tabs for detected tokens
+5. Change filter parameters in the URL to automatically open filtered views
 
-**Note**: The extension works automatically without any configuration needed.
+### Configuration Options
+
+**Cooldown Period**: Time before opening the same token again (default: 15 minutes)
+**Maximum Tabs**: Total limit on token tabs and filter URL tabs opened (default: 10)
+
+### Supported Chains
+
+The extension supports 17 blockchain networks: Solana, BSC, Base, Ethereum, Polygon, PulseChain, TON, Hyperliquid, Sui, Avalanche, World Chain, Abstract, XRPL, Arbitrum, HyperEVM, NEAR, and Sonic.
 
 ## How It Works
 
-The extension monitors the dexscreener.com page for Solana token links. When detected:
-1. Extracts the token ID from the URL
-2. Checks if the token was opened in the last 15 minutes
-3. Opens the token page in a new background tab
-4. Records the token and timestamp to prevent duplicates
+### Token Detection
+1. Content script detects the current blockchain chain from the URL
+2. Scans the page for token links using multiple detection strategies
+3. Extracts token IDs from various URL patterns
+4. Sends token information to the background script
 
-### Features
+### Tab Opening
+1. Checks if the token was recently opened (cooldown period)
+2. Verifies if the token tab is already open
+3. Ensures the maximum tabs limit is not exceeded
+4. Opens the token page in a new background tab
+5. Records the token and timestamp for tracking
 
-- **Automatic**: Works without any configuration
-- **Smart cooldown**: 15-minute cooldown per token
-- **Background tabs**: Doesn't interrupt your browsing
-- **No duplicate tabs**: Checks if token is already open
+### Filter URL Detection
+1. Monitors URL changes on dexscreener.com
+2. Detects when filter parameters are added or modified
+3. Automatically opens a new tab with the filter URL
+4. Prevents duplicate filter URLs from opening
 
 ## Technical Details
 
 ### Architecture
 
 - **Manifest V3**: Uses the latest Chrome Extension Manifest V3 standard
-- **Background Service Worker**: Manages tab opening with cooldown tracking
-- **Content Scripts**: Detects token links on dexscreener.com pages
-- **No Storage**: Operates entirely in memory
+- **Background Service Worker**: Manages tab opening with cooldown tracking and settings
+- **Content Scripts**: Detects token links and URL changes on dexscreener.com pages
+- **Popup UI**: Provides settings interface for configuration
+- **Storage**: Saves user settings (cooldown, max tabs)
 
 ### Permissions
 
 - `tabs`: Open and manage tabs
+- `storage`: Save user configuration
 - `host_permissions`: Access dexscreener.com domains
 
 ### Files Structure
@@ -71,10 +100,16 @@ The extension monitors the dexscreener.com page for Solana token links. When det
 dexscreener-auto-filter/
 ├── manifest.json          # Extension manifest (Manifest V3)
 ├── background.js          # Service worker for tab management and cooldown tracking
-├── content.js            # Content script for token detection
+├── content.js            # Content script for token and URL detection
+├── popup.html            # Settings popup UI
+├── popup.js              # Settings popup logic
 ├── icon16.png            # Extension icon (16x16)
 ├── icon48.png            # Extension icon (48x48)
 ├── icon128.png           # Extension icon (128x128)
+├── generate-icons.js     # Utility to generate icon files
+├── icon.svg              # Icon source file
+├── filter-url-builder.js # Helper for building filter URLs (optional)
+├── FILTER-REFERENCE.md   # DexScreener filter parameters reference
 └── README.md             # This file
 ```
 
@@ -103,33 +138,37 @@ dexscreener-auto-filter/
 ## Troubleshooting
 
 ### Tabs not opening automatically
-- Make sure you're on dexscreener.com
+- Make sure you're on dexscreener.com with a supported chain
 - Check browser console for errors (F12)
-- Ensure you have permissions to open tabs
+- Ensure maximum tabs limit is not reached
+- Verify cooldown period hasn't expired
 - Try reloading the page
 
 ### Extension not working
 - Disable and re-enable the extension
 - Reload the extension from `chrome://extensions/`
-- Check the service worker for errors
-- Verify that the extension is enabled on dexscreener.com
+- Check the service worker for errors (click "Inspect views: service worker")
+- Verify that settings are saved (check popup)
+- Check that you're on a supported chain page
 
 ## Privacy & Security
 
-- No data is stored anywhere
+- Settings are stored locally in browser storage
 - No data is sent to external servers
 - The extension only interacts with dexscreener.com
 - No tracking or analytics
-- Operates entirely in browser memory
+- All tab tracking happens in browser memory
 
-## License
+## Additional Resources
 
-MIT License - feel free to use and modify as needed.
+- See `FILTER-REFERENCE.md` for complete DexScreener filter parameters
+- Use the popup settings to configure cooldown and tab limits
+- Check browser console (F12) for detailed logging
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## Support
+## License
 
-For issues or questions, please open an issue on the GitHub repository.
+MIT License - feel free to use and modify as needed.
