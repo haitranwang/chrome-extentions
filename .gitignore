@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+package-lock.json
+package.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Extension build artifacts
+*.crx
+*.pem
+*.zip
+
+# Icons (excluding final icon files)
+*.png
+!*/icon*.png
+*.svg
+!icon.svg
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+

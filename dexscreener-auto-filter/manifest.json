@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "DexScreener Auto Token Opener",
+  "version": "1.0.0",
+  "description": "Automatically opens tabs for Solana tokens detected on dexscreener.com",
+  "permissions": [
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.dexscreener.com/*",
+    "https://api.dexscreener.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://dexscreener.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icon16.png", "icon48.png", "icon128.png"],
+      "matches": ["https://*.dexscreener.com/*"]
+    }
+  ]
+}
+
