@@ -28,6 +28,8 @@ chrome.storage.onChanged.addListener(() => {
 // Initialize settings on startup
 loadSettings();
 
+let openedFilterUrls = new Set(); // Track opened filter URLs
+
 // Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'tokenMatchesFilter') {
@@ -36,8 +38,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Return statistics
     sendResponse({
       tabCount: openedTokens.size,
-      settings: settings
+      settings: settings,
+      filterUrlCount: openedFilterUrls.size
     });
+  } else if (request.action === 'openFilterUrl') {
+    openFilterUrl(request.url);
   }
 });
 
@@ -88,6 +93,50 @@ async function openTokenTab(tokenId) {
     }
   } catch (error) {
     console.error('Error opening token tab:', error);
+  }
+}
+
+// Function to open filter URL in new tab
+async function openFilterUrl(url) {
+  try {
+    // Skip if we've already opened this URL
+    if (openedFilterUrls.has(url)) {
+      console.log('⏭️ Filter URL already opened:', url);
+      return;
+    }
+
+    // Check all tabs to see if URL is already open
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      if (tab.url === url) {
+        console.log('⏭️ Filter URL already open in tab:', url);
+        openedFilterUrls.add(url);
+        return;
+      }
+    }
+
+    // Check maximum tabs limit
+    const totalOpenTabs = openedFilterUrls.size + openedTokens.size;
+    if (totalOpenTabs >= settings.maxTabs) {
+      console.log(`⚠️ Maximum tabs limit reached (${settings.maxTabs}). Skipping filter URL`);
+      return;
+    }
+
+    // Open new tab with filter URL
+    await chrome.tabs.create({ url: url, active: false });
+    openedFilterUrls.add(url);
+
+    console.log(`🌐 Opened filter URL: ${url}`);
+    console.log(`📊 Total filter URLs opened: ${openedFilterUrls.size}`);
+
+    // Clean up old filter URLs (keep only last 50)
+    if (openedFilterUrls.size > 50) {
+      const urls = Array.from(openedFilterUrls);
+      openedFilterUrls = new Set(urls.slice(25)); // Keep last 25
+      console.log('🗑️ Cleaned up old filter URLs');
+    }
+  } catch (error) {
+    console.error('Error opening filter URL:', error);
   }
 }
 
