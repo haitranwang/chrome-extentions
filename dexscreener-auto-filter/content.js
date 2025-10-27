@@ -36,24 +36,23 @@ let isUpdatingDOM = false;
 
 // Watch for new token listings with throttling
 function watchForTokens() {
-  // Only process token checks, not countdown updates
+  // Throttled function for token detection - separate from countdown updates
   const throttledCheck = throttle(() => {
-    if (!isUpdatingDOM) {
-      invalidateTokenCache();
-      checkMatchingTokens();
-    }
-  }, 2000); // Check every 2 seconds
+    invalidateTokenCache();
+    checkMatchingTokens();
+  }, 1000); // Check every 1 second for token detection
 
   const observer = new MutationObserver(() => {
-    // Only trigger token checking, not countdown updates
-    throttledCheck();
-    // Note: countdown updates are handled separately by setInterval
+    // Only trigger token checking when NOT updating countdowns
+    if (!isUpdatingDOM) {
+      throttledCheck();
+    }
   });
 
   const targetNode = document.body;
   observer.observe(targetNode, {
     childList: true,
-    subtree: false // Only watch direct children, not entire subtree
+    subtree: true // Enable subtree to catch all changes
   });
 
   return observer;
@@ -635,23 +634,25 @@ function init() {
   console.log('🔗 Detected Chain:', detectedChain || 'None');
 
   if (detectedChain) {
-    // Run initial token check and countdown setup
+    // Run initial token check immediately (no delay for faster detection)
     setTimeout(() => {
       console.log('🔍 Running initial token check...');
+      invalidateTokenCache(); // Clear cache for fresh scan
       checkMatchingTokens();
-      // Force update countdowns immediately
-      updateCountdownDisplays();
-      // Invalidate cache after initial check
-      cachedTokenLinks = null;
-    }, 1000);
+    }, 500); // Reduced delay
 
     // Start countdown timer updates
     setTimeout(() => {
       fetchOpenedTokens();
       startCountdownUpdates();
-      // Also trigger an immediate countdown update
-      updateCountdownDisplays();
-    }, 1500);
+    }, 1000);
+
+    // Also run token check after a bit to catch dynamic content
+    setTimeout(() => {
+      console.log('🔍 Running secondary token check...');
+      invalidateTokenCache();
+      checkMatchingTokens();
+    }, 2500);
   }
 
   // Start watching for tokens
