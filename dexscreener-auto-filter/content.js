@@ -4,6 +4,8 @@
 function watchForTokens() {
   const observer = new MutationObserver(() => {
     checkMatchingTokens();
+    // Also update countdown displays when DOM changes
+    updateCountdownDisplays();
   });
 
   const targetNode = document.body;
@@ -146,9 +148,138 @@ function findTokenLinks(chain) {
   return Array.from(links);
 }
 
+// Get token ID from a link element
+function getTokenIdFromLink(link, chain) {
+  const href = link.getAttribute('href');
+  if (!href) return null;
+
+  // Try multiple patterns to extract token ID
+  let match = href.match(`/${chain}/([A-Za-z0-9]+)`);
+  if (match) return match[1];
+
+  match = href.match(/\/token\/([A-Za-z0-9]+)/);
+  if (match) return match[1];
+
+  match = href.match(/([A-Za-z0-9]{30,})/);
+  if (match) return match[1];
+
+  return null;
+}
+
+// Fetch opened tokens data from background
+function fetchOpenedTokens() {
+  chrome.runtime.sendMessage({ action: 'getOpenedTokens' }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error('Error fetching opened tokens:', chrome.runtime.lastError);
+      return;
+    }
+
+    openedTokensData.clear();
+    if (response && response.tokens) {
+      response.tokens.forEach(({ tokenId, timestamp, cooldownMs }) => {
+        openedTokensData.set(tokenId, { timestamp, cooldownMs });
+      });
+    }
+
+    // Update countdown displays
+    updateCountdownDisplays();
+  });
+}
+
+// Add countdown timer to a token row
+function addCountdownTimer(link, tokenId, cooldownMs, timestamp) {
+  // Remove existing timer if any
+  const existingTimer = link.querySelector('.ds-token-timer');
+  if (existingTimer) existingTimer.remove();
+
+  // Create timer element
+  const timer = document.createElement('div');
+  timer.className = 'ds-token-timer';
+  timer.style.cssText = `
+    display: inline-block;
+    padding: 2px 8px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: 8px;
+    white-space: nowrap;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  `;
+
+  // Calculate and display time remaining
+  function updateTimer() {
+    const now = Date.now();
+    const elapsed = now - timestamp;
+    const remaining = cooldownMs - elapsed;
+
+    if (remaining <= 0) {
+      timer.textContent = '✅ Ready';
+      timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
+      timer.style.cursor = 'pointer';
+      timer.title = 'Token is ready to be opened again';
+    } else {
+      const minutes = Math.floor(remaining / 60000);
+      const seconds = Math.floor((remaining % 60000) / 1000);
+      timer.textContent = `⏰ ${minutes}m ${seconds}s`;
+      timer.title = `Cooldown: ${minutes}m ${seconds}s remaining`;
+
+      // Change color based on time remaining
+      if (remaining < 60000) {
+        timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+      } else if (remaining < 300000) {
+        timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
+      }
+    }
+  }
+
+  updateTimer();
+  link.appendChild(timer);
+}
+
+// Update countdown displays for all token rows
+function updateCountdownDisplays() {
+  const currentChain = detectChain();
+  if (!currentChain) return;
+
+  // Find all token links
+  const tokenLinks = findTokenLinks(currentChain);
+
+  tokenLinks.forEach(link => {
+    const tokenId = getTokenIdFromLink(link, currentChain);
+    if (!tokenId) return;
+
+    // Check if this token is in cooldown
+    const tokenData = openedTokensData.get(tokenId);
+    if (tokenData) {
+      addCountdownTimer(link, tokenId, tokenData.cooldownMs, tokenData.timestamp);
+    }
+  });
+}
+
+// Start countdown timer updates
+function startCountdownUpdates() {
+  if (countdownInterval) return;
+
+  // Update every second
+  countdownInterval = setInterval(() => {
+    updateCountdownDisplays();
+  }, 1000);
+
+  // Also fetch fresh data every 5 seconds
+  setInterval(() => {
+    fetchOpenedTokens();
+  }, 5000);
+}
+
 // Track URL changes and opened filter URLs
 let lastUrl = location.href;
 let openedFilterUrls = new Set();
+
+// Countdown timer functionality
+let openedTokensData = new Map(); // tokenId -> {timestamp, cooldownMs}
+let countdownInterval = null;
 
 // Detect URL changes and open new filter tabs
 function detectUrlChange() {
@@ -214,6 +345,12 @@ function init() {
       console.log('🔍 Running initial token check...');
       checkMatchingTokens();
     }, 1000);
+
+    // Start countdown timer updates
+    setTimeout(() => {
+      fetchOpenedTokens();
+      startCountdownUpdates();
+    }, 1500);
   }
 
   // Start watching for tokens

@@ -1,6 +1,8 @@
 // Background service worker for Chrome Extension
 
 let openedTokens = new Map(); // tokenId -> timestamp
+let tokenUrlToId = new Map(); // tokenUrl -> tokenId
+let tabIdToTokenInfo = new Map(); // tabId -> {tokenId, tokenUrl, timestamp}
 let settings = {
   cooldownMinutes: 15,
   maxTabs: 10
@@ -30,6 +32,21 @@ loadSettings();
 
 let openedFilterUrls = new Set(); // Track opened filter URLs
 
+// Listen for tab removal to clean up counters
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  // Check if we're tracking this tab ID
+  if (tabIdToTokenInfo.has(tabId)) {
+    const { tokenId, tokenUrl } = tabIdToTokenInfo.get(tabId);
+
+    // Remove from all tracking structures
+    openedTokens.delete(tokenId);
+    tokenUrlToId.delete(tokenUrl);
+    tabIdToTokenInfo.delete(tabId);
+
+    console.log(`🗑️ Tab closed: Removed ${tokenId} from tracker (${openedTokens.size}/${settings.maxTabs} tabs remaining)`);
+  }
+});
+
 // Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'tokenMatchesFilter') {
@@ -50,6 +67,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: true });
     });
     return true; // Keep message channel open for async response
+  } else if (request.action === 'getOpenedTokens') {
+    // Return list of opened tokens with timestamps for countdown display
+    const tokenData = Array.from(openedTokens.entries()).map(([tokenId, timestamp]) => ({
+      tokenId,
+      timestamp,
+      cooldownMs: settings.cooldownMinutes * 60 * 1000
+    }));
+    sendResponse({ tokens: tokenData });
+    return true;
   }
 });
 
@@ -85,9 +111,11 @@ async function openTokenTab(tokenId, chain = 'solana') {
       return;
     }
 
-    // Open new tab
-    await chrome.tabs.create({ url: tokenUrl, active: false });
+    // Open new tab and store the mapping
+    const createdTab = await chrome.tabs.create({ url: tokenUrl, active: false });
     openedTokens.set(tokenId, now);
+    tokenUrlToId.set(tokenUrl, tokenId);
+    tabIdToTokenInfo.set(createdTab.id, { tokenId, tokenUrl, timestamp: now });
 
     console.log(`✅ Opened token ${tokenId} on ${chain} (${openedTokens.size}/${settings.maxTabs} tabs)`);
 
@@ -95,6 +123,18 @@ async function openTokenTab(tokenId, chain = 'solana') {
     for (const [token, timestamp] of openedTokens.entries()) {
       if (now - timestamp > cooldownPeriod) {
         openedTokens.delete(token);
+        // Clean up from URL mapping as well
+        for (const [url, id] of tokenUrlToId.entries()) {
+          if (id === token) {
+            tokenUrlToId.delete(url);
+          }
+        }
+        // Clean up from tabId mapping as well
+        for (const [tabId, info] of tabIdToTokenInfo.entries()) {
+          if (info.tokenId === token) {
+            tabIdToTokenInfo.delete(tabId);
+          }
+        }
         console.log(`🗑️ Removed expired token from cache: ${token}`);
       }
     }
