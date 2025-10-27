@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "DexScreener Auto Token Opener",
-  "version": "1.0.0",
-  "description": "Automatically opens tabs for Solana tokens detected on dexscreener.com",
+  "version": "1.1.0",
+  "description": "Automatically opens tabs for tokens on multiple blockchains (Solana, BSC, Base, Ethereum, etc.)",
   "permissions": [
     "tabs",
     "storage"

@@ -33,7 +33,11 @@ let openedFilterUrls = new Set(); // Track opened filter URLs
 // Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'tokenMatchesFilter') {
-    openTokenTab(request.tokenId);
+    // Open token tab and keep channel open for async response
+    openTokenTab(request.tokenId, request.chain || 'solana').then(() => {
+      sendResponse({ success: true });
+    });
+    return true; // Keep message channel open for async response
   } else if (request.action === 'getStats') {
     // Return statistics
     sendResponse({
@@ -42,12 +46,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       filterUrlCount: openedFilterUrls.size
     });
   } else if (request.action === 'openFilterUrl') {
-    openFilterUrl(request.url);
+    openFilterUrl(request.url).then(() => {
+      sendResponse({ success: true });
+    });
+    return true; // Keep message channel open for async response
   }
 });
 
 // Function to open token tab with configurable cooldown and max tabs limit
-async function openTokenTab(tokenId) {
+async function openTokenTab(tokenId, chain = 'solana') {
   try {
     const now = Date.now();
     const cooldownPeriod = settings.cooldownMinutes * 60 * 1000; // Convert to milliseconds
@@ -55,17 +62,17 @@ async function openTokenTab(tokenId) {
     // Check cooldown with configured period
     const lastOpened = openedTokens.get(tokenId);
     if (lastOpened && (now - lastOpened < cooldownPeriod)) {
-      console.log(`Token ${tokenId} is in cooldown (${Math.ceil((cooldownPeriod - (now - lastOpened)) / 1000 / 60)}m remaining)`);
+      console.log(`Token ${tokenId} (${chain}) is in cooldown (${Math.ceil((cooldownPeriod - (now - lastOpened)) / 1000 / 60)}m remaining)`);
       return;
     }
 
     // Check if token already exists in any tab
     const tabs = await chrome.tabs.query({});
-    const tokenUrl = `https://dexscreener.com/solana/${tokenId}`;
+    const tokenUrl = `https://dexscreener.com/${chain}/${tokenId}`;
 
     for (const tab of tabs) {
       if (tab.url === tokenUrl) {
-        console.log(`Token ${tokenId} already open`);
+        console.log(`Token ${tokenId} (${chain}) already open`);
         openedTokens.set(tokenId, now);
         return;
       }
@@ -74,7 +81,7 @@ async function openTokenTab(tokenId) {
     // IMPORTANT: Check maximum tabs limit BEFORE opening new tabs
     const openedTokenCount = openedTokens.size;
     if (openedTokenCount >= settings.maxTabs) {
-      console.log(`Maximum tabs limit reached (${settings.maxTabs}/${openedTokenCount}). Skipping ${tokenId}`);
+      console.log(`Maximum tabs limit reached (${settings.maxTabs}/${openedTokenCount}). Skipping ${tokenId} (${chain})`);
       return;
     }
 
@@ -82,7 +89,7 @@ async function openTokenTab(tokenId) {
     await chrome.tabs.create({ url: tokenUrl, active: false });
     openedTokens.set(tokenId, now);
 
-    console.log(`✅ Opened token ${tokenId} (${openedTokens.size}/${settings.maxTabs} tabs)`);
+    console.log(`✅ Opened token ${tokenId} on ${chain} (${openedTokens.size}/${settings.maxTabs} tabs)`);
 
     // Clean up old entries (older than cooldown period)
     for (const [token, timestamp] of openedTokens.entries()) {
