@@ -43,10 +43,8 @@ function watchForTokens() {
   }, 1000); // Check every 1 second for token detection
 
   const observer = new MutationObserver(() => {
-    // Only trigger token checking when NOT updating countdowns
-    if (!isUpdatingDOM) {
-      throttledCheck();
-    }
+    // Always trigger token checking - don't block it with isUpdatingDOM
+    throttledCheck();
   });
 
   const targetNode = document.body;
@@ -75,6 +73,11 @@ function detectChain() {
     }
   }
   return null;
+}
+
+// Check if we're on a new-pairs page
+function isNewPairsPage() {
+  return location.href.includes('/new-pairs/');
 }
 
 function checkMatchingTokens() {
@@ -110,104 +113,140 @@ function processTokens(currentChain, maxTabs) {
   }
   lastProcessCheck = now;
 
-  // Multiple strategies to find token links
-  const tokenLinks = findTokenLinks(currentChain);
-  const processedTokens = new Set(); // Track tokens processed in this call
-  let messageCount = 0;
-  const MAX_MESSAGES = Math.min(maxTabs, 50); // Don't send more than maxTabs
-
-  // Known non-token page identifiers to exclude
-  const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
-
-  tokenLinks.forEach(link => {
-    if (messageCount >= MAX_MESSAGES) return; // Stop if we've sent too many messages
-
-    const href = link.getAttribute('href');
-
-    // Try multiple patterns to extract token ID
-    let tokenId = null;
-
-    // Pattern 1: /solana/TOKENID
-    let match = href.match(`/${currentChain}/([A-Za-z0-9]+)`);
-    if (match) {
-      tokenId = match[1];
-
-      // CRITICAL FIX: Validate tokenId length - real token IDs are long
-      // Exclude short strings like "moonit", "watchlist", etc.
-      if (tokenId && tokenId.length < 20) {
-        // Token IDs are typically 30-50+ characters
-        // Short strings are navigation links, not tokens
-        tokenId = null;
-      }
-
-      // Also check if it's a known excluded path
-      if (tokenId && excludedPaths.some(path => href.toLowerCase().includes(path))) {
-        tokenId = null;
-      }
+  // Query current open tab count and calculate remaining slots
+  chrome.runtime.sendMessage({ action: 'getOpenTabCount' }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error('Error fetching open tab count:', chrome.runtime.lastError);
+      return;
     }
 
-    // Pattern 2: /token/SOMEID (some pages use /token/)
-    if (!tokenId) {
-      match = href.match(/\/token\/([A-Za-z0-9]+)/);
+    const currentOpenTabs = response && response.openTabCount ? response.openTabCount : 0;
+    const remainingSlots = Math.max(0, maxTabs - currentOpenTabs);
+
+    console.log(`📊 Current open tabs: ${currentOpenTabs}, Max tabs: ${maxTabs}, Remaining slots: ${remainingSlots}`);
+
+    if (remainingSlots === 0) {
+      console.log(`⏭️ No remaining slots (${currentOpenTabs}/${maxTabs} tabs open). Skipping token processing.`);
+      return;
+    }
+
+    // Multiple strategies to find token links
+    const tokenLinks = findTokenLinks(currentChain);
+    const processedTokens = new Set(); // Track tokens processed in this call
+    let messageCount = 0;
+    const MAX_MESSAGES = Math.min(remainingSlots, 50); // Don't send more than remaining slots
+
+    // Known non-token page identifiers to exclude
+    const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
+
+    tokenLinks.forEach(link => {
+      if (messageCount >= MAX_MESSAGES) return; // Stop if we've sent too many messages
+
+      const href = link.getAttribute('href');
+
+      // Try multiple patterns to extract token ID
+      let tokenId = null;
+
+      // Pattern 1: /solana/TOKENID
+      let match = href.match(`/${currentChain}/([A-Za-z0-9]+)`);
       if (match) {
         tokenId = match[1];
+
+        // CRITICAL FIX: Validate tokenId length - real token IDs are long
+        // Exclude short strings like "moonit", "watchlist", etc.
         if (tokenId && tokenId.length < 20) {
+          // Token IDs are typically 30-50+ characters
+          // Short strings are navigation links, not tokens
+          tokenId = null;
+        }
+
+        // Also check if it's a known excluded path
+        if (tokenId && excludedPaths.some(path => href.toLowerCase().includes(path))) {
           tokenId = null;
         }
       }
-    }
 
-    // Pattern 3: Check if href contains a valid token ID (long alphanumeric)
-    if (!tokenId) {
-      match = href.match(/([A-Za-z0-9]{30,})/); // Token IDs are usually long
-      if (match) {
-        tokenId = match[1];
-      }
-    }
-
-    if (tokenId) {
-      const fullTokenId = `${currentChain}:${tokenId}`; // Include chain in ID
-
-      // Only process each token once per check
-      if (!processedTokens.has(fullTokenId)) {
-        processedTokens.add(fullTokenId);
-
-        // Record detection time for this token
-        if (!tokenDetectionTime.has(tokenId)) {
-          tokenDetectionTime.set(tokenId, Date.now());
-        }
-
-        // Open tab for detected token with chain info
-        chrome.runtime.sendMessage({
-          action: 'tokenMatchesFilter',
-          tokenId: tokenId,
-          chain: currentChain
-        }, (response) => {
-          // Optional: Log response if needed
-          if (chrome.runtime.lastError) {
-            console.error('Error sending message:', chrome.runtime.lastError);
+      // Pattern 2: /token/SOMEID (some pages use /token/)
+      if (!tokenId) {
+        match = href.match(/\/token\/([A-Za-z0-9]+)/);
+        if (match) {
+          tokenId = match[1];
+          if (tokenId && tokenId.length < 20) {
+            tokenId = null;
           }
-        });
+        }
+      }
 
-        messageCount++;
+      // Pattern 3: Check if href contains a valid token ID (long alphanumeric)
+      if (!tokenId) {
+        match = href.match(/([A-Za-z0-9]{30,})/); // Token IDs are usually long
+        if (match) {
+          tokenId = match[1];
+        }
+      }
+
+      if (tokenId) {
+        const fullTokenId = `${currentChain}:${tokenId}`; // Include chain in ID
+
+        // Only process each token once per check
+        if (!processedTokens.has(fullTokenId)) {
+          processedTokens.add(fullTokenId);
+
+          // Check if we've hit the limit
+
+          // Check cooldown status from background
+          chrome.runtime.sendMessage({ action: 'checkTokenCooldown', tokenId: tokenId }, (cooldownResponse) => {
+            if (chrome.runtime.lastError) {
+              console.error('Error checking token cooldown:', chrome.runtime.lastError);
+              return;
+            }
+
+            if (cooldownResponse && cooldownResponse.isInCooldown) {
+              console.log(`⏳ Skipping token ${tokenId} - still in cooldown (verified by background)`);
+              return;
+            }
+
+            // Check limit again before proceeding
+            if (messageCount >= MAX_MESSAGES) return;
+
+            messageCount++;
+
+            // Token is ready, proceed with opening tab
+            chrome.runtime.sendMessage({
+              action: 'tokenMatchesFilter',
+              tokenId: tokenId,
+              chain: currentChain
+            }, (response) => {
+              if (chrome.runtime.lastError) {
+                console.error('Error sending message:', chrome.runtime.lastError);
+                return;
+              }
+              if (response && response.success && response.timestamp && response.cooldownMs) {
+                openedTokensData.set(tokenId, { timestamp: response.timestamp, cooldownMs: response.cooldownMs });
+                console.log(`✅ Tab opened for ${tokenId}, updating UI immediately`);
+                updateCountdownDisplays();
+              } else if (response && !response.success) {
+                console.log(`⏭️ Tab NOT opened for ${tokenId} (max tabs reached or already in cooldown)`);
+              }
+            });
+          });
+        }
+      }
+    });
+
+    if (messageCount > 0) {
+      console.log(`📊 Found ${messageCount} unique ${currentChain} tokens to process (maxTabs: ${maxTabs}, remainingSlots: ${remainingSlots})`);
+    } else {
+      console.log(`🔍 No ${currentChain} tokens found. Total links found: ${tokenLinks.length}`);
+      // Debug: Show sample of links found
+      if (tokenLinks.length > 0 && tokenLinks.length <= 5) {
+        tokenLinks.forEach(link => {
+          console.log('   Link:', link.getAttribute('href'));
+        });
       }
     }
   });
-
-  if (messageCount > 0) {
-    console.log(`📊 Found ${messageCount} unique ${currentChain} tokens to process (maxTabs: ${maxTabs})`);
-  } else {
-    console.log(`🔍 No ${currentChain} tokens found. Total links found: ${tokenLinks.length}`);
-    // Debug: Show sample of links found
-    if (tokenLinks.length > 0 && tokenLinks.length <= 5) {
-      tokenLinks.forEach(link => {
-        console.log('   Link:', link.getAttribute('href'));
-      });
-    }
-  }
 }
-
-// Enhanced token link finding with multiple strategies and caching
 function findTokenLinks(chain, forceRefresh = false) {
   const now = Date.now();
 
@@ -321,12 +360,182 @@ function formatTime(seconds) {
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
+// Helper function to get cooldown duration for a token in seconds
+function getCooldownDuration(tokenId) {
+  const tokenData = openedTokensData.get(tokenId);
+  if (tokenData && tokenData.cooldownMs) {
+    return Math.floor(tokenData.cooldownMs / 1000); // Convert milliseconds to seconds
+  }
+  // Default to 120 minutes (2 hours) if not available
+  return 120 * 60;
+}
+
+// Helper function to check if a token is ready (not in cooldown)
+function isTokenReady(tokenId) {
+  const tokenData = openedTokensData.get(tokenId);
+  const cooldownDuration = getCooldownDuration(tokenId);
+
+  if (tokenData && tokenData.timestamp) {
+    // Token was opened - check if cooldown has expired
+    const openedTime = tokenData.timestamp;
+    const now = Date.now();
+    const elapsed = Math.floor((now - openedTime) / 1000); // seconds since token was opened
+
+    if (elapsed < cooldownDuration) {
+      // Still in cooldown
+      return false;
+    } else {
+      // Cooldown has expired
+      return true;
+    }
+  }
+
+  // Token has never been opened, so it's ready
+  return true;
+}
+
+// Helper function to check if a token is in cooldown
+function isTokenInCooldown(tokenId) {
+  const tokenData = openedTokensData.get(tokenId);
+  const cooldownDuration = getCooldownDuration(tokenId);
+
+  if (tokenData && tokenData.timestamp) {
+    // Token was opened - check if cooldown has expired
+    const openedTime = tokenData.timestamp;
+    const now = Date.now();
+    const elapsed = Math.floor((now - openedTime) / 1000); // seconds since token was opened
+
+    if (elapsed < cooldownDuration) {
+      // Still in cooldown
+      return true;
+    } else {
+      // Cooldown has expired
+      return false;
+    }
+  }
+
+  // Token has never been opened, so not in cooldown
+  return false;
+}
+
+// Track timers being created to prevent race conditions
+const timersBeingCreated = new Set();
+
 // Add countdown timer to a token row - now displays detection time countdown
 function addCountdownTimer(link, tokenId) {
+  // Only show countdown timers on new-pairs pages
+  if (!isNewPairsPage()) {
+    return;
+  }
+
   // Validate link
   if (!link || !link.href) {
     return;
   }
+
+  // CRITICAL FIX: First check GLOBALLY for existing timer for this token
+  // This prevents duplicate timers from being created anywhere on the page
+  let existingTimer = document.querySelector(`.ds-token-timer[data-token-id="${tokenId}"]`);
+
+  // If found globally, update it and clean up any duplicates
+  if (existingTimer) {
+    // Clean up ALL duplicate timers for this token (keep only the first one found)
+    const allTimersForToken = document.querySelectorAll(`.ds-token-timer[data-token-id="${tokenId}"]`);
+    if (allTimersForToken.length > 1) {
+      console.log('🧹 Cleaning up', allTimersForToken.length - 1, 'duplicate timers for token:', tokenId);
+      for (let i = 1; i < allTimersForToken.length; i++) {
+        allTimersForToken[i].remove();
+      }
+    }
+
+    // Update the timer
+    const timer = existingTimer;
+
+    // Get the timestamp when token was opened and cooldown duration
+    const tokenData = openedTokensData.get(tokenId);
+    const cooldownDuration = getCooldownDuration(tokenId);
+
+    let countdownSeconds = 0;
+    let elapsed = 0;
+    let isInCooldown = false;
+
+    if (tokenData && tokenData.timestamp) {
+      // Token was opened - calculate countdown from when it was opened
+      const openedTime = tokenData.timestamp;
+      const now = Date.now();
+      elapsed = Math.floor((now - openedTime) / 1000); // seconds since token was opened
+
+      if (elapsed < cooldownDuration) {
+        // Still in cooldown
+        isInCooldown = true;
+        countdownSeconds = cooldownDuration - elapsed;
+      } else {
+        // Cooldown has expired
+        isInCooldown = false;
+        countdownSeconds = 0;
+      }
+    }
+
+    // Only show timer if token is in cooldown
+    if (isInCooldown) {
+      timer.textContent = formatTime(countdownSeconds);
+    } else {
+      // Remove timer if not in cooldown (no READY badge)
+      timer.remove();
+      return;
+    }
+
+    // Update title with time since last action
+    if (tokenData && tokenData.timestamp) {
+      if (isInCooldown) {
+        const remainingMins = Math.floor(countdownSeconds / 60);
+        const totalMins = Math.floor(cooldownDuration / 60);
+        timer.title = `Opened ${formatTime(elapsed)} ago • ${remainingMins}/${totalMins} min cooldown`;
+      } else {
+        timer.title = `Cooldown complete (opened ${formatTime(elapsed)} ago)`;
+      }
+    } else {
+      const totalMins = Math.floor(cooldownDuration / 60);
+      timer.title = `Not opened yet • Will have ${totalMins}-min cooldown`;
+    }
+
+    // Change color based on cooldown status
+    if (!isInCooldown) {
+      // Ready or never opened
+      timer.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+      timer.style.opacity = '1';
+    } else {
+      // In cooldown - color based on remaining time
+      const cooldownProgress = countdownSeconds / cooldownDuration;
+      if (cooldownProgress > 0.75) {
+        // More than 75% of cooldown remaining (green)
+        timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
+        timer.style.opacity = '1';
+      } else if (cooldownProgress > 0.5) {
+        // 50-75% remaining (blue)
+        timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
+        timer.style.opacity = '1';
+      } else if (cooldownProgress > 0.25) {
+        // 25-50% remaining (yellow)
+        timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+        timer.style.opacity = '1';
+      } else {
+        // Less than 25% remaining (orange/red)
+        timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
+        timer.style.opacity = '0.9';
+      }
+    }
+
+    return;
+  }
+
+  // Prevent race condition - if timer is already being created, skip
+  if (timersBeingCreated.has(tokenId)) {
+    return;
+  }
+
+  // Mark that we're creating a timer for this token
+  timersBeingCreated.add(tokenId);
 
   // Try multiple strategies to find the container
   let container = link.closest('tr');
@@ -343,169 +552,235 @@ function addCountdownTimer(link, tokenId) {
   }
 
   if (!container) {
+    timersBeingCreated.delete(tokenId);
     return;
   }
 
-  // Look for existing timer in the container
-  const existingTimer = container.querySelector('.ds-token-timer');
-  if (existingTimer) {
-    // Just update the existing timer element
-    const timer = existingTimer;
-
-    // Get detection time or default to 2 hours ago (for countdown)
-    const detectionTime = tokenDetectionTime.get(tokenId) || Date.now() - (2 * 60 * 60 * 1000);
-    const now = Date.now();
-    const elapsed = Math.floor((now - detectionTime) / 1000); // seconds since detection
-    const countdownSeconds = Math.max(0, (2 * 60 * 60) - elapsed); // 2 hours - elapsed
-
-    // Format as HH:MM:SS
-    timer.textContent = formatTime(countdownSeconds);
-
-    // Update title with time since discovery
-    if (elapsed < 3600) {
-      timer.title = `Discovered ${formatTime(elapsed)} ago`;
-    } else if (elapsed < 7200) {
-      const hours = Math.floor(elapsed / 3600);
-      const minutes = Math.floor((elapsed % 3600) / 60);
-      timer.title = `Discovered ${hours}h ${minutes}m ago`;
-    } else {
-      const hours = Math.floor(elapsed / 3600);
-      timer.title = `Discovered ${hours}h ago`;
-    }
-
-    // Change color based on how recent the discovery is
-    if (elapsed < 300) { // Less than 5 minutes - very recent (green)
-      timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
-      timer.style.opacity = '1';
-    } else if (elapsed < 1800) { // Less than 30 minutes - recent (blue)
-      timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
-      timer.style.opacity = '1';
-    } else if (elapsed < 3600) { // Less than 1 hour - moderate (yellow)
-      timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
-      timer.style.opacity = '1';
-    } else if (elapsed < 5400) { // Less than 1.5 hours (orange)
-      timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
-      timer.style.opacity = '0.9';
-    } else if (elapsed < 7200) { // Less than 2 hours (red)
-      timer.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
-      timer.style.opacity = '0.8';
-    } else { // Over 2 hours - show as expired
-      timer.textContent = 'EXPIRED';
-      timer.style.background = 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
-      timer.style.opacity = '0.6';
-    }
-
+  // Double-check after getting container (in case another thread created one)
+  const recheckTimer = document.querySelector(`.ds-token-timer[data-token-id="${tokenId}"]`);
+  if (recheckTimer) {
+    timersBeingCreated.delete(tokenId);
+    addCountdownTimer(link, tokenId); // Recursively call to update
     return;
   }
 
-  // Create new timer element
+  // No timer exists for this token globally - create a new one
+  // First clean up any orphaned timers without data-token-id in this container
+  const orphanedTimers = container.querySelectorAll('.ds-token-timer:not([data-token-id])');
+  orphanedTimers.forEach(timer => timer.remove());
+
+  // Create new timer element with unique identifier
   const timer = document.createElement('div');
   timer.className = 'ds-token-timer';
+  timer.setAttribute('data-token-id', tokenId); // Add unique identifier
   timer.style.cssText = `
     display: inline-block !important;
-    padding: 3px 10px;
+    padding: 3px 8px;
     background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
     color: white !important;
     border-radius: 12px;
     font-size: 11px;
     font-weight: 700;
-    margin-left: 10px;
+    margin-left: 8px;
     white-space: nowrap;
     box-shadow: 0 2px 6px rgba(0,0,0,0.15);
     letter-spacing: 0.5px;
     font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     z-index: 9999;
     position: relative;
+    vertical-align: middle;
+    line-height: 1.2;
+    flex-shrink: 0;
   `;
 
-  // Try multiple insertion strategies
+  // Try multiple insertion strategies to insert inline with token name
   let inserted = false;
 
-  // Strategy 1: Find a good container (td, div with certain classes, etc.)
+  // Strategy 1: Insert after ds-dex-table-row-base-token-name-text inside ds-dex-table-row-base-token-name
   try {
-    const tdCell = link.closest('td');
-    if (tdCell) {
-      tdCell.appendChild(timer);
+    // Find the parent row first, then search for token elements within it
+    const tableRow = link.closest('.ds-dex-table-row');
+    const tokenNameContainer = tableRow ? tableRow.querySelector('.ds-dex-table-row-base-token-name') : link.closest('.ds-dex-table-row-base-token-name');
+    const tokenNameText = tableRow ? tableRow.querySelector('.ds-dex-table-row-base-token-name-text') : link.closest('.ds-dex-table-row-base-token-name-text');
+
+    if (tokenNameContainer && tokenNameText) {
+      // Insert timer right after the token name text element
+      tokenNameText.parentNode.insertBefore(timer, tokenNameText.nextSibling);
+      console.log('✅ Inserted timer after .ds-dex-table-row-base-token-name-text for token:', tokenId);
       inserted = true;
+    } else if (tokenNameContainer) {
+      // Fallback: insert at end of token name container
+      tokenNameContainer.appendChild(timer);
+      console.log('✅ Inserted timer inside .ds-dex-table-row-base-token-name (no text element found) for token:', tokenId);
+      inserted = true;
+    } else {
+      console.log('⚠️ Strategy 1: Could not find token container. tableRow:' + tableRow + ', tokenNameContainer:' + tokenNameContainer + ' for token:', tokenId);
     }
   } catch (e) {
-    // Silent fail
+    console.log('❌ Strategy 1 failed:', e);
   }
 
-  // Strategy 2: Insert after the link
+  // Strategy 2: Find parent span/div of the link and insert after link
   if (!inserted) {
     try {
-      if (link.parentNode) {
+      // Find the immediate parent container of the link
+      let parentContainer = link.parentElement;
+      if (parentContainer && parentContainer.tagName !== 'TD') {
+        // Insert after the link inside its parent
+        if (link.nextSibling) {
+          parentContainer.insertBefore(timer, link.nextSibling);
+        } else {
+          parentContainer.appendChild(timer);
+        }
+        inserted = true;
+      }
+    } catch (e) {
+      // Silent failure
+    }
+  }
+
+  // Strategy 3: Insert directly after the link element
+  if (!inserted) {
+    try {
+      if (link.nextSibling) {
         link.parentNode.insertBefore(timer, link.nextSibling);
         inserted = true;
-      }
-    } catch (e) {
-      // Silent fail
-    }
-  }
-
-  // Strategy 3: Append to container
-  if (!inserted) {
-    try {
-      if (container) {
-        container.appendChild(timer);
+      } else if (link.parentNode) {
+        link.parentNode.appendChild(timer);
         inserted = true;
       }
     } catch (e) {
-      // Silent fail
+      // Silent failure
     }
   }
 
-  // Strategy 4: Fallback - append to link as last resort
+  // Strategy 4: Fallback - find any nearby container and insert
   if (!inserted) {
     try {
-      link.appendChild(timer);
-      inserted = true;
+      const tdCell = link.closest('td');
+      if (tdCell) {
+        // Try to find the token name wrapper div
+        const tokenWrapper = tdCell.querySelector('.ds-dex-table-row-base-token-name');
+        if (tokenWrapper) {
+          tokenWrapper.appendChild(timer);
+          inserted = true;
+        } else {
+          tdCell.appendChild(timer);
+          inserted = true;
+        }
+      }
     } catch (e) {
-      // Silent fail
+      // Silent failure
     }
   }
 
   if (!inserted) {
+    timersBeingCreated.delete(tokenId);
     return;
   }
 
   // Initial update with same logic as update above
-  const detectionTime = tokenDetectionTime.get(tokenId) || Date.now() - (2 * 60 * 60 * 1000);
-  const now = Date.now();
-  const elapsed = Math.floor((now - detectionTime) / 1000);
-  const countdownSeconds = Math.max(0, (2 * 60 * 60) - elapsed);
+  const tokenData = openedTokensData.get(tokenId);
+  const cooldownDuration = getCooldownDuration(tokenId);
 
-  timer.textContent = formatTime(countdownSeconds);
+  let countdownSeconds = 0;
+  let elapsed = 0;
+  let isInCooldown = false;
 
-  if (elapsed < 3600) {
-    timer.title = `Discovered ${formatTime(elapsed)} ago`;
-  } else {
-    const hours = Math.floor(elapsed / 3600);
-    timer.title = `Discovered ${hours}h ago`;
+  if (tokenData && tokenData.timestamp) {
+    // Token was opened - calculate countdown from when it was opened
+    const openedTime = tokenData.timestamp;
+    const now = Date.now();
+    elapsed = Math.floor((now - openedTime) / 1000);
+
+    if (elapsed < cooldownDuration) {
+      // Still in cooldown
+      isInCooldown = true;
+      countdownSeconds = cooldownDuration - elapsed;
+    } else {
+      // Cooldown has expired
+      isInCooldown = false;
+      countdownSeconds = 0;
+    }
   }
 
-  // Set color
-  if (elapsed < 300) {
-    timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
-    timer.style.opacity = '1';
-  } else if (elapsed < 1800) {
-    timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
-    timer.style.opacity = '1';
-  } else if (elapsed < 3600) {
-    timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
-    timer.style.opacity = '1';
-  } else if (elapsed < 5400) {
-    timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
-    timer.style.opacity = '0.9';
-  } else if (elapsed < 7200) {
-    timer.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
-    timer.style.opacity = '0.8';
+  // Only show timer if token is in cooldown
+  if (isInCooldown) {
+    timer.textContent = formatTime(countdownSeconds);
   } else {
-    timer.textContent = 'EXPIRED';
-    timer.style.background = 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
-    timer.style.opacity = '0.6';
+    // Remove timer if not in cooldown (no READY badge)
+    timer.remove();
+    timersBeingCreated.delete(tokenId);
+    return;
   }
+
+  // Update title
+  if (tokenData && tokenData.timestamp) {
+    if (isInCooldown) {
+      const remainingMins = Math.floor(countdownSeconds / 60);
+      const totalMins = Math.floor(cooldownDuration / 60);
+      timer.title = `Opened ${formatTime(elapsed)} ago • ${remainingMins}/${totalMins} min cooldown`;
+    } else {
+      timer.title = `Cooldown complete (opened ${formatTime(elapsed)} ago)`;
+    }
+  } else {
+    const totalMins = Math.floor(cooldownDuration / 60);
+    timer.title = `Not opened yet • Will have ${totalMins}-min cooldown`;
+  }
+
+  // Set color based on cooldown status
+  if (!isInCooldown) {
+    timer.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+    timer.style.opacity = '1';
+  } else {
+    const cooldownProgress = countdownSeconds / cooldownDuration;
+    if (cooldownProgress > 0.75) {
+      timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
+      timer.style.opacity = '1';
+    } else if (cooldownProgress > 0.5) {
+      timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
+      timer.style.opacity = '1';
+    } else if (cooldownProgress > 0.25) {
+      timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+      timer.style.opacity = '1';
+    } else {
+        timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
+      timer.style.opacity = '0.9';
+    }
+  }
+
+  // Clear the creation flag now that timer is created
+  timersBeingCreated.delete(tokenId);
+}
+
+// Clean up duplicate timers periodically
+function cleanupDuplicateTimers() {
+  // Get all timers with data-token-id
+  const allTimers = document.querySelectorAll('.ds-token-timer[data-token-id]');
+  const timerMap = new Map();
+
+  allTimers.forEach(timer => {
+    const tokenId = timer.getAttribute('data-token-id');
+    if (!timerMap.has(tokenId)) {
+      timerMap.set(tokenId, [timer]);
+    } else {
+      timerMap.get(tokenId).push(timer);
+    }
+  });
+
+  // Remove duplicate timers, keeping only the first one for each token
+  timerMap.forEach(timers => {
+    if (timers.length > 1) {
+      // Keep the first, remove the rest
+      for (let i = 1; i < timers.length; i++) {
+        timers[i].remove();
+      }
+    }
+  });
+
+  // Also clean up any timers without data-token-id (orphaned timers)
+  const orphanedTimers = document.querySelectorAll('.ds-token-timer:not([data-token-id])');
+  orphanedTimers.forEach(timer => timer.remove());
 }
 
 // Update countdown displays for all token rows
@@ -516,25 +791,36 @@ function updateCountdownDisplays() {
   isUpdatingDOM = true;
 
   try {
-    const currentChain = detectChain();
-    if (!currentChain) return;
+  const currentChain = detectChain();
+    if (!currentChain) {
+      return;
+    }
+
+    // Clean up any duplicate timers first
+    cleanupDuplicateTimers();
 
     // Find all token links - force refresh to get latest
     const tokenLinks = findTokenLinks(currentChain, true);
+    console.log('🔄 updateCountdownDisplays: Found', tokenLinks.length, 'token links');
 
     if (tokenLinks.length === 0) {
       return;
     }
 
-    tokenLinks.forEach(link => {
-      const tokenId = getTokenIdFromLink(link, currentChain);
-      if (!tokenId) return;
+    tokenLinks.forEach((link, index) => {
+    const tokenId = getTokenIdFromLink(link, currentChain);
+    console.log(`🔗 Link ${index}: tokenId=${tokenId || 'NO_ID'}, href=${link.href?.substring(0, 80)}`);
 
-      // Show timer for all detected tokens
-      try {
-        addCountdownTimer(link, tokenId);
-      } catch (error) {
-        // Silent error handling
+    if (!tokenId) return;
+
+      // Only show timer for tokens that are in cooldown
+      if (isTokenInCooldown(tokenId)) {
+        try {
+          console.log('⏰ Calling addCountdownTimer for:', tokenId);
+          addCountdownTimer(link, tokenId);
+        } catch (error) {
+          console.error('❌ Error in addCountdownTimer:', error);
+        }
       }
     });
   } finally {
@@ -547,12 +833,15 @@ function updateCountdownDisplays() {
 
 // Start countdown timer updates with optimized frequency
 function startCountdownUpdates() {
-  if (countdownInterval) return;
+  // Prevent multiple intervals from being created
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+  }
 
-  // Update every 5 seconds to reduce load on browser
+  // Update every 1 second for accurate countdown display
   countdownInterval = setInterval(() => {
     updateCountdownDisplays();
-  }, 5000); // Reduced to 5 seconds
+  }, 1000); // 1 second for smooth countdown
 
   // Fetch fresh data every 30 seconds
   fetchOpenedTokens(); // Initial fetch

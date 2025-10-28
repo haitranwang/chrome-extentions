@@ -38,27 +38,41 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   if (tabIdToTokenInfo.has(tabId)) {
     const { tokenId, tokenUrl } = tabIdToTokenInfo.get(tabId);
 
-    // Remove from all tracking structures
-    openedTokens.delete(tokenId);
+    // Remove only from tab tracking, but KEEP token in openedTokens for cooldown
+    // This ensures tokens remain in cooldown even after tab is closed
     tokenUrlToId.delete(tokenUrl);
     tabIdToTokenInfo.delete(tabId);
 
-    console.log(`🗑️ Tab closed: Removed ${tokenId} from tracker (${openedTokens.size}/${settings.maxTabs} tabs remaining)`);
+    // NOTE: We deliberately DON'T delete from openedTokens here
+    // because the token should remain in cooldown even if the tab is closed
+    // The token will be removed from openedTokens after cooldown period expires
+
+    console.log(`🗑️ Tab closed: ${tokenId} (tab tracking removed, cooldown maintained)`);
   }
 });
 
 // Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'tokenMatchesFilter') {
-    // Open token tab and keep channel open for async response
-    openTokenTab(request.tokenId, request.chain || 'solana').then(() => {
-      sendResponse({ success: true });
+    openTokenTab(request.tokenId, request.chain || 'solana').then((opened) => {
+      if (opened) {
+        const now = Date.now();
+        const cooldownMs = settings.cooldownMinutes * 60 * 1000;
+        sendResponse({
+          success: true,
+          timestamp: now,
+          cooldownMs: cooldownMs,
+          tokenId: request.tokenId
+        });
+      } else {
+        sendResponse({ success: false, tokenId: request.tokenId });
+      }
     });
     return true; // Keep message channel open for async response
   } else if (request.action === 'getStats') {
     // Return statistics
     sendResponse({
-      tabCount: openedTokens.size,
+      tabCount: tabIdToTokenInfo.size, // Count actually open tabs
       settings: settings,
       filterUrlCount: openedFilterUrls.size
     });
@@ -76,6 +90,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }));
     sendResponse({ tokens: tokenData });
     return true;
+  } else if (request.action === 'getOpenTabCount') {
+    // Return current count of open token tabs
+    sendResponse({ openTabCount: tabIdToTokenInfo.size });
+    return true;
+  } else if (request.action === 'checkTokenCooldown') {
+    const tokenId = request.tokenId;
+    const now = Date.now();
+    const cooldownPeriod = settings.cooldownMinutes * 60 * 1000;
+    const lastOpened = openedTokens.get(tokenId);
+    const isInCooldown = lastOpened && (now - lastOpened < cooldownPeriod);
+    sendResponse({ isInCooldown: isInCooldown, tokenId: tokenId });
+    return true;
   }
 });
 
@@ -89,7 +115,7 @@ async function openTokenTab(tokenId, chain = 'solana') {
     const lastOpened = openedTokens.get(tokenId);
     if (lastOpened && (now - lastOpened < cooldownPeriod)) {
       console.log(`Token ${tokenId} (${chain}) is in cooldown (${Math.ceil((cooldownPeriod - (now - lastOpened)) / 1000 / 60)}m remaining)`);
-      return;
+      return false;
     }
 
     // Check if token already exists in any tab
@@ -100,15 +126,16 @@ async function openTokenTab(tokenId, chain = 'solana') {
       if (tab.url === tokenUrl) {
         console.log(`Token ${tokenId} (${chain}) already open`);
         openedTokens.set(tokenId, now);
-        return;
+        return true; // Tab already open, consider it successful
       }
     }
 
     // IMPORTANT: Check maximum tabs limit BEFORE opening new tabs
-    const openedTokenCount = openedTokens.size;
+    // Use tabIdToTokenInfo.size to count actually open tabs (not tokens in cooldown)
+    const openedTokenCount = tabIdToTokenInfo.size;
     if (openedTokenCount >= settings.maxTabs) {
       console.log(`Maximum tabs limit reached (${settings.maxTabs}/${openedTokenCount}). Skipping ${tokenId} (${chain})`);
-      return;
+      return false; // Max tabs reached, could not open
     }
 
     // Open new tab and store the mapping
@@ -117,7 +144,8 @@ async function openTokenTab(tokenId, chain = 'solana') {
     tokenUrlToId.set(tokenUrl, tokenId);
     tabIdToTokenInfo.set(createdTab.id, { tokenId, tokenUrl, timestamp: now });
 
-    console.log(`✅ Opened token ${tokenId} on ${chain} (${openedTokens.size}/${settings.maxTabs} tabs)`);
+    console.log(`✅ Opened token ${tokenId} on ${chain} (${tabIdToTokenInfo.size}/${settings.maxTabs} tabs)`);
+
 
     // Clean up old entries (older than cooldown period)
     for (const [token, timestamp] of openedTokens.entries()) {
@@ -138,8 +166,11 @@ async function openTokenTab(tokenId, chain = 'solana') {
         console.log(`🗑️ Removed expired token from cache: ${token}`);
       }
     }
+
+    return true; // Successfully opened tab
   } catch (error) {
     console.error('Error opening token tab:', error);
+    return false;
   }
 }
 
