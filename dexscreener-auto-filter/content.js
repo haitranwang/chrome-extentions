@@ -868,8 +868,49 @@ let openedFilterUrls = new Set();
 let openedTokensData = new Map(); // tokenId -> {timestamp, cooldownMs}
 let countdownInterval = null;
 
+// Supabase configuration for new filters to improve cooldown performance
+const SUPABASE_URL = 'https://putcecldtpverondjprx.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB1dGNlY2xkdHB2ZXJvbmRqcHJ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2Mzk0NjQsImV4cCI6MjA3NzIxNTQ2NH0.mNcGdDw_3F3MLT1jG0iX4LF-ffKtgsHII4SCOJqIBwY';
+
 // Track token detection time (when token was first detected)
 let tokenDetectionTime = new Map(); // tokenId -> detectionTimestamp
+
+// Track new filters to avoid duplicate logging
+let newFilterUrls = new Set();
+
+// Function to log filter to Supabase
+async function logFilterToSupabase(filterUrl, chain) {
+  // Skip if already new in this session
+  if (newFilterUrls.has(filterUrl)) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/new_filter`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        filter_url: filterUrl,
+        chain: chain || null
+      })
+    });
+
+    if (response.ok || response.status === 201 || response.status === 204) {
+      newFilterUrls.add(filterUrl);
+      console.log('✅ New filter to Supabase:', filterUrl.substring(0, 80));
+    } else {
+      console.error('Failed to log filter:', response.status, response.statusText);
+    }
+  } catch (error) {
+    // Silent fail - don't interrupt user experience
+    console.error('Error logging filter to Supabase:', error);
+  }
+}
 
 // Detect URL changes and open new filter tabs
 function detectUrlChange() {
@@ -892,6 +933,9 @@ function detectUrlChange() {
     // Check if we've already opened this filter URL
     if (!openedFilterUrls.has(currentUrl)) {
       console.log('🔍 New filter URL detected:', currentUrl);
+
+      // Log filter to Supabase for analytics
+      logFilterToSupabase(currentUrl, detectedChain);
 
       // Send message to background to open this filter URL
       chrome.runtime.sendMessage({

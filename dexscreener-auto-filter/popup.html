@@ -12,7 +12,7 @@
     }
 
     body {
-      width: 320px;
+      width: 400px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: white;
     }
@@ -222,6 +222,150 @@
     input:checked + .slider:hover {
       box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
     }
+
+    /* Tabs Styles */
+    .tabs {
+      display: flex;
+      border-bottom: 2px solid #e0e0e0;
+      margin-bottom: 16px;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 12px;
+      text-align: center;
+      cursor: pointer;
+      font-weight: 500;
+      color: #666;
+      border-bottom: 2px solid transparent;
+      transition: all 0.3s;
+    }
+
+    .tab.active {
+      color: #667eea;
+      border-bottom-color: #667eea;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    /* Filter List Styles */
+    .filter-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      background: #f9f9f9;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      transition: all 0.2s;
+    }
+
+    .filter-item:hover {
+      background: #f0f0f0;
+    }
+
+    .filter-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .filter-url {
+      font-size: 11px;
+      color: #666;
+      word-break: break-all;
+      margin-bottom: 4px;
+    }
+
+    .filter-date {
+      font-size: 10px;
+      color: #999;
+    }
+
+    .filter-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-icon {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 18px;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+
+    .btn-icon:hover {
+      background: rgba(102, 126, 234, 0.1);
+    }
+
+    .btn-icon.favorite {
+      color: #fbbf24;
+    }
+
+    .btn-icon.delete {
+      color: #ef4444;
+    }
+
+    .current-filter-section {
+      margin-bottom: 20px;
+      padding: 12px;
+      background: #f0f9ff;
+      border-left: 4px solid #667eea;
+      border-radius: 6px;
+    }
+
+    .current-filter-url {
+      font-size: 11px;
+      color: #666;
+      word-break: break-all;
+      margin-bottom: 8px;
+    }
+
+    .add-favorite-btn {
+      padding: 8px 16px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .add-favorite-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #666;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #999;
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
   </style>
 </head>
 <body>
@@ -231,20 +375,28 @@
   </div>
 
   <div class="content">
-    <div class="form-group" style="border-bottom: 1px solid #e0e0e0; padding-bottom: 16px; margin-bottom: 20px;">
-      <label style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 12px; background: #f9f9f9; border-radius: 8px; margin-bottom: 0;">
-        <span>
-          <strong>Enable Extension</strong>
-          <span class="label-description">Turn auto-open on/off</span>
-        </span>
-        <label class="switch">
-          <input type="checkbox" id="extensionEnabled" checked>
-          <span class="slider"></span>
-        </label>
-      </label>
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab active" data-tab="settings">Settings</div>
+      <div class="tab" data-tab="filters">Favorite Filters</div>
     </div>
 
-    <form id="settingsForm">
+    <!-- Settings Tab -->
+    <div class="tab-content active" id="settingsTab">
+      <div class="form-group" style="border-bottom: 1px solid #e0e0e0; padding-bottom: 16px; margin-bottom: 20px;">
+        <label style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 12px; background: #f9f9f9; border-radius: 8px; margin-bottom: 0;">
+          <span>
+            <strong>Enable Extension</strong>
+            <span class="label-description">Turn auto-open on/off</span>
+          </span>
+          <label class="switch">
+            <input type="checkbox" id="extensionEnabled" checked>
+            <span class="slider"></span>
+          </label>
+        </label>
+      </div>
+
+      <form id="settingsForm">
       <div class="form-group">
         <label for="cooldownMinutes">
           Cooldown Period
@@ -272,17 +424,43 @@
         <button type="submit" class="btn-primary" id="saveBtn">Save</button>
       </div>
 
-      <div id="status" class="status"></div>
-    </form>
+        <div id="status" class="status"></div>
+      </form>
 
-    <div class="stats">
-      <div class="stats-item">
-        <span class="stats-label">Extension Status:</span>
-        <span class="stats-value" id="extensionStatus">Active</span>
+      <div class="stats">
+        <div class="stats-item">
+          <span class="stats-label">Extension Status:</span>
+          <span class="stats-value" id="extensionStatus">Active</span>
+        </div>
+        <div class="stats-item">
+          <span class="stats-label">Tabs Opened:</span>
+          <span class="stats-value" id="tabsCount">0</span>
+        </div>
       </div>
-      <div class="stats-item">
-        <span class="stats-label">Tabs Opened:</span>
-        <span class="stats-value" id="tabsCount">0</span>
+    </div>
+
+    <!-- Favorite Filters Tab -->
+    <div class="tab-content" id="filtersTab">
+      <!-- Status message for filters tab -->
+      <div id="filtersStatus" class="status" style="display: none;"></div>
+
+      <!-- Current Filter Section -->
+      <div id="currentFilterSection" class="current-filter-section" style="display: none;">
+        <strong>Current Filter</strong>
+        <div class="current-filter-url" id="currentFilterUrl"></div>
+        <button class="add-favorite-btn" id="addFavoriteBtn">
+          ⭐ Add to Favorites
+        </button>
+      </div>
+
+      <!-- Favorites List -->
+      <div id="filtersListContainer">
+        <div class="loading" id="loadingFilters">Loading favorites...</div>
+        <div class="empty-state" id="emptyState" style="display: none;">
+          <div class="empty-state-icon">⭐</div>
+          <div>No favorite filters yet</div>
+        </div>
+        <div id="filtersList"></div>
       </div>
     </div>
   </div>
