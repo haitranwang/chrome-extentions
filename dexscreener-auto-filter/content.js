@@ -113,36 +113,45 @@ function processTokens(currentChain, maxTabs) {
   }
   lastProcessCheck = now;
 
-  // Query current open tab count and calculate remaining slots
-  chrome.runtime.sendMessage({ action: 'getOpenTabCount' }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error('Error fetching open tab count:', chrome.runtime.lastError);
+  // Check if extension is enabled
+  chrome.storage.local.get(['extensionEnabled'], (data) => {
+    const enabled = data.extensionEnabled !== false;
+
+    if (!enabled) {
+      console.log('⏸️ Extension disabled - skipping token processing');
       return;
     }
 
-    const currentOpenTabs = response && response.openTabCount ? response.openTabCount : 0;
-    const remainingSlots = Math.max(0, maxTabs - currentOpenTabs);
+    // Query current open tab count and calculate remaining slots
+    chrome.runtime.sendMessage({ action: 'getOpenTabCount' }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('Error fetching open tab count:', chrome.runtime.lastError);
+        return;
+      }
 
-    console.log(`📊 Current open tabs: ${currentOpenTabs}, Max tabs: ${maxTabs}, Remaining slots: ${remainingSlots}`);
+      const currentOpenTabs = response && response.openTabCount ? response.openTabCount : 0;
+      const remainingSlots = Math.max(0, maxTabs - currentOpenTabs);
 
-    if (remainingSlots === 0) {
-      console.log(`⏭️ No remaining slots (${currentOpenTabs}/${maxTabs} tabs open). Skipping token processing.`);
-      return;
-    }
+      console.log(`📊 Current open tabs: ${currentOpenTabs}, Max tabs: ${maxTabs}, Remaining slots: ${remainingSlots}`);
 
-    // Multiple strategies to find token links
-    const tokenLinks = findTokenLinks(currentChain);
-    const processedTokens = new Set(); // Track tokens processed in this call
-    let messageCount = 0;
-    const MAX_MESSAGES = Math.min(remainingSlots, 50); // Don't send more than remaining slots
+      if (remainingSlots === 0) {
+        console.log(`⏭️ No remaining slots (${currentOpenTabs}/${maxTabs} tabs open). Skipping token processing.`);
+        return;
+      }
 
-    // Known non-token page identifiers to exclude
-    const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
+      // Multiple strategies to find token links
+      const tokenLinks = findTokenLinks(currentChain);
+      const processedTokens = new Set(); // Track tokens processed in this call
+      let messageCount = 0;
+      const MAX_MESSAGES = Math.min(remainingSlots, 50); // Don't send more than remaining slots
 
-    tokenLinks.forEach(link => {
-      if (messageCount >= MAX_MESSAGES) return; // Stop if we've sent too many messages
+      // Known non-token page identifiers to exclude
+      const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
 
-      const href = link.getAttribute('href');
+      tokenLinks.forEach(link => {
+        if (messageCount >= MAX_MESSAGES) return; // Stop if we've sent too many messages
+
+        const href = link.getAttribute('href');
 
       // Try multiple patterns to extract token ID
       let tokenId = null;
@@ -245,7 +254,8 @@ function processTokens(currentChain, maxTabs) {
         });
       }
     }
-  });
+    }); // Close getOpenTabCount callback
+  }); // Close chrome.storage.local.get callback
 }
 function findTokenLinks(chain, forceRefresh = false) {
   const now = Date.now();

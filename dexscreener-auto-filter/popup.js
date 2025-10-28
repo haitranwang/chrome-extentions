@@ -6,17 +6,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('settingsForm').addEventListener('submit', saveSettings);
   document.getElementById('resetBtn').addEventListener('click', resetSettings);
+
+  // Handle extension toggle
+  document.getElementById('extensionEnabled').addEventListener('change', handleExtensionToggle);
 });
 
 // Load saved settings
 function loadSettings() {
-  chrome.storage.local.get(['cooldownMinutes', 'maxTabs'], (data) => {
+  chrome.storage.local.get(['cooldownMinutes', 'maxTabs', 'extensionEnabled'], (data) => {
     if (data.cooldownMinutes) {
       document.getElementById('cooldownMinutes').value = data.cooldownMinutes;
     }
     if (data.maxTabs) {
       document.getElementById('maxTabs').value = data.maxTabs;
     }
+    // Load extension enabled state (default to true if not set)
+    document.getElementById('extensionEnabled').checked = data.extensionEnabled !== false;
+  });
+}
+
+// Handle extension toggle
+function handleExtensionToggle() {
+  const enabled = document.getElementById('extensionEnabled').checked;
+
+  chrome.storage.local.set({ extensionEnabled: enabled }, () => {
+    showStatus(enabled ? 'Extension enabled!' : 'Extension disabled!', 'success');
+    loadStats();
   });
 }
 
@@ -68,25 +83,34 @@ function resetSettings() {
 
 // Load and display statistics
 function loadStats() {
-  // Check if extension is active on dexscreener.com
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const currentTab = tabs[0];
+  // Get extension enabled state
+  chrome.storage.local.get(['extensionEnabled'], (data) => {
+    const enabled = data.extensionEnabled !== false;
     const statusEl = document.getElementById('extensionStatus');
 
-    if (currentTab.url?.includes('dexscreener.com')) {
-      statusEl.textContent = 'Active on DexScreener';
-      statusEl.style.color = '#4caf50';
-    } else {
-      statusEl.textContent = 'Inactive - Navigate to DexScreener';
-      statusEl.style.color = '#666';
-    }
-  });
+    // Check if extension is active on dexscreener.com
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const currentTab = tabs[0];
+      const isOnDexScreener = currentTab.url?.includes('dexscreener.com');
 
-  // Get tab count (send message to background)
-  chrome.runtime.sendMessage({ action: 'getStats' }, (response) => {
-    if (response && response.tabCount !== undefined) {
-      document.getElementById('tabsCount').textContent = response.tabCount;
-    }
+      if (!enabled) {
+        statusEl.textContent = 'Extension Disabled';
+        statusEl.style.color = '#999';
+      } else if (isOnDexScreener) {
+        statusEl.textContent = 'Active on DexScreener';
+        statusEl.style.color = '#4caf50';
+      } else {
+        statusEl.textContent = 'Inactive - Navigate to DexScreener';
+        statusEl.style.color = '#666';
+      }
+    });
+
+    // Get tab count (send message to background)
+    chrome.runtime.sendMessage({ action: 'getStats' }, (response) => {
+      if (response && response.tabCount !== undefined) {
+        document.getElementById('tabsCount').textContent = response.tabCount;
+      }
+    });
   });
 }
 
