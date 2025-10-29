@@ -1,6 +1,6 @@
-# DexScreener Auto Token Opener Chrome Extension
+# DexScreener Auto Filter Chrome Extension
 
-A Chrome extension that automatically opens tabs for tokens detected on DexScreener.com with advanced filtering and multi-chain support.
+A Chrome extension for DexScreener.com that automatically opens tabs for tokens with advanced filtering, favorite filter management, and multi-chain support.
 
 > **Note**: This extension is part of the [Chrome Extensions Repository](../README.md). For repository structure and organization, see the main README.
 
