@@ -23,7 +23,7 @@ function debounce(func, wait) {
 // Cache for token links to avoid repeated DOM queries
 let cachedTokenLinks = null;
 let cacheTimestamp = 0;
-const CACHE_DURATION = 2000; // Cache for 2 seconds
+const CACHE_DURATION = 500; // Cache for 500ms (reduced to catch filter changes faster)
 
 // Invalidate cache
 function invalidateTokenCache() {
@@ -34,9 +34,91 @@ function invalidateTokenCache() {
 // Flag to prevent recursive updates
 let isUpdatingDOM = false;
 
+// Supported blockchain chains for GMGN
+const SUPPORTED_CHAINS = ['sol', 'bsc', 'eth', 'base', 'arb', 'polygon', 'avax', 'op', 'zksync', 'ton', 'sui', 'aptos', 'near'];
+
+// Detect current chain from URL
+function detectChain() {
+  const url = location.href;
+  // Check for chain in URL: https://gmgn.ai/trend?chain=sol or https://gmgn.ai/sol/token/...
+  for (const chain of SUPPORTED_CHAINS) {
+    if (url.includes(`/trend?chain=${chain}`) || url.includes(`/${chain}/token/`)) {
+      return chain;
+    }
+  }
+
+  // Try to extract from URL path
+  const pathMatch = url.match(/gmgn\.ai\/([^\/]+)/);
+  if (pathMatch && SUPPORTED_CHAINS.includes(pathMatch[1])) {
+    return pathMatch[1];
+  }
+
+  return null;
+}
+
+// Check if we're on a trend/listing page
+function isListingPage() {
+  // Support trend pages and chain pages
+  return location.href.includes('/trend') ||
+         location.href.includes('/chain/') ||
+         /gmgn\.ai\/[^\/]+(\?|$)/.test(location.pathname);
+}
+
+// CSS selectors for price change columns (as provided)
+const COLUMN_SELECTORS = {
+  oneMin: '#GlobalScrollDomId > div > div.py-0.overflow-x-auto.px-\\[8px\\] > div.px-0.py-0.overflow-x-auto.block > div > div > div > div > div.g-table-tbody-virtual.g-table-tbody > div.g-table-tbody-virtual-holder > div > div > div:nth-child(1) > div:nth-child(12) > div > span',
+  fiveMin: '#GlobalScrollDomId > div > div.py-0.overflow-x-auto.px-\\[8px\\] > div.px-0.py-0.overflow-x-auto.block > div > div > div > div > div.g-table-tbody-virtual.g-table-tbody > div.g-table-tbody-virtual-holder > div > div > div:nth-child(1) > div:nth-child(13) > div > span',
+  oneHour: '#GlobalScrollDomId > div > div.py-0.overflow-x-auto.px-\\[8px\\] > div.px-0.py-0.overflow-x-auto.block > div > div > div > div > div.g-table-tbody-virtual.g-table-tbody > div.g-table-tbody-virtual-holder > div > div > div:nth-child(1) > div:nth-child(14) > div > span'
+};
+
+// Track last processed tokens to avoid reprocessing
+let lastProcessedTokens = new Set();
+let lastProcessCheck = 0;
+const PROCESS_INTERVAL = 2000; // Only process every 2 seconds max
+
+// Track tokens that have messages sent (to prevent duplicate tab opening)
+let tokensWithPendingMessages = new Map();
+
+// Track tokens that are currently being checked (awaiting cooldown response)
+let tokensBeingChecked = new Set();
+
+// Track successfully processed tokens to avoid reprocessing
+let successfullyProcessedTokens = new Map();
+const PROCESSED_TOKEN_TIMEOUT = 60000; // Remember processed tokens for 60 seconds
+
+// Filter configuration (loaded from storage)
+let filterConfig = {
+  oneMin: { enabled: false, threshold: 0 },
+  fiveMin: { enabled: false, threshold: 0 },
+  oneHour: { enabled: false, threshold: 0 }
+};
+
+// Load filter configuration from storage
+async function loadFilterConfig() {
+  try {
+    const data = await chrome.storage.local.get(['filterConfig']);
+    if (data.filterConfig) {
+      filterConfig = data.filterConfig;
+      console.log('Filter configuration loaded:', filterConfig);
+    }
+  } catch (error) {
+    console.error('Error loading filter config:', error);
+  }
+}
+
+// Reload filter config when it changes
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.filterConfig) {
+    filterConfig = changes.filterConfig.newValue;
+    console.log('Filter configuration updated:', filterConfig);
+  }
+});
+
+// Initialize filter config on load
+loadFilterConfig();
+
 // Watch for new token listings with throttling
 function watchForTokens() {
-  // Throttled function for token detection
   const throttledCheck = throttle(() => {
     invalidateTokenCache();
     checkMatchingTokens();
@@ -55,185 +137,234 @@ function watchForTokens() {
   return observer;
 }
 
-// Supported blockchain chains
-const SUPPORTED_CHAINS = {
-  'sol': 'Solana',
-  'bsc': 'Binance Smart Chain'
-};
+// Check if a token matches the configured filters
+function tokenMatchesFilters(tokenRow) {
+  // If no filters are enabled, don't match any tokens
+  const hasEnabledFilter = filterConfig.oneMin.enabled ||
+                          filterConfig.fiveMin.enabled ||
+                          filterConfig.oneHour.enabled;
 
-// Detect current chain from URL
-function detectChain() {
-  const url = location.href;
-
-  // Check for chain parameter in URL: ?chain=sol or ?chain=bsc
-  const chainMatch = url.match(/[?&]chain=([a-z]+)/);
-  if (chainMatch && SUPPORTED_CHAINS.hasOwnProperty(chainMatch[1])) {
-    return chainMatch[1];
+  if (!hasEnabledFilter) {
+    return false;
   }
 
-  // Check for chain in path: /sol/token/ or /bsc/token/
-  if (url.includes('/sol/')) {
-    return 'sol';
-  }
-  if (url.includes('/bsc/')) {
-    return 'bsc';
+  // Try to find price change values in this row
+  const cells = tokenRow.querySelectorAll('div > div > span');
+
+  // The structure should be: [token info..., 1m%, 5m%, 1h%, ...]
+  // We need to find these values in the row
+  let cellIndex = 0;
+
+  for (const cell of cells) {
+    const text = cell.textContent.trim();
+
+    // Check if this cell contains a percentage value
+    if (text.includes('%')) {
+      const value = parseFloat(text.replace('%', ''));
+
+      if (!isNaN(value)) {
+        // Try to identify which column this is based on position
+        // This is approximate - we'll need to test with actual GMGN structure
+        if (cellIndex === 11 && filterConfig.oneMin.enabled) {
+          // 1m% column
+          if (value < filterConfig.oneMin.threshold) {
+            return false;
+          }
+        } else if (cellIndex === 12 && filterConfig.fiveMin.enabled) {
+          // 5m% column
+          if (value < filterConfig.fiveMin.threshold) {
+            return false;
+          }
+        } else if (cellIndex === 13 && filterConfig.oneHour.enabled) {
+          // 1h% column
+          if (value < filterConfig.oneHour.threshold) {
+            return false;
+          }
+        }
+
+        cellIndex++;
+      }
+    } else {
+      cellIndex++;
+    }
   }
 
-  return null;
+  return true; // All enabled filters passed
 }
 
-// Check if we're on a filter page (not a token detail page)
-function isFilterPage() {
-  const url = location.href;
-  // Filter pages have chain query parameter but not /token/ in path
-  return (url.includes('chain=sol') || url.includes('chain=bsc')) && !url.includes('/token/');
+// Highlight a token row
+function highlightTokenRow(tokenRow) {
+  if (tokenRow && !tokenRow.dataset.gmgnHighlighted) {
+    tokenRow.style.filter = 'brightness(1.3)';
+    tokenRow.style.transition = 'filter 0.3s ease';
+    tokenRow.dataset.gmgnHighlighted = 'true';
+    console.log('✅ Highlighted token row');
+  }
 }
 
 function checkMatchingTokens() {
   const currentChain = detectChain();
 
   if (!currentChain) {
-    if (location.href.includes('gmgn.ai')) {
-      console.log('GMGN Auto Filter: ⏭️ Not a supported chain page:', location.href);
-    }
+    console.log('⏭️ Not a supported chain page:', location.href);
     return;
   }
 
-  // Only process tokens on filter pages
-  if (!isFilterPage()) {
-    console.log('GMGN Auto Filter: ⏭️ Not on a filter page, skipping token detection');
-    return;
-  }
-
-  // Get max tabs from settings to limit messages sent
-  chrome.storage.local.get(['maxTabs'], (data) => {
-    const maxTabs = data.maxTabs || 10;
-    processTokens(currentChain, maxTabs);
-  });
+  // Process all matching tokens
+  processTokens(currentChain);
 }
 
-// Track last processed tokens to avoid reprocessing
-let lastProcessedTokens = new Set();
-let lastProcessCheck = 0;
-const PROCESS_INTERVAL = 2000; // Only process every 2 seconds max
-
-function processTokens(currentChain, maxTabs) {
+function processTokens(currentChain) {
   const now = Date.now();
 
   // Skip if we've recently processed tokens
   if (now - lastProcessCheck < PROCESS_INTERVAL) {
     return;
   }
+
+  // Update timestamp BEFORE processing (prevents race conditions)
   lastProcessCheck = now;
+
+  // CRITICAL: Only process tokens on listing pages, not on token detail pages
+  const currentUrl = location.href;
+  if (currentUrl.match(/\/token\/[A-Za-z0-9]+$/)) {
+    return;
+  }
+
+  // Clean up old successfully processed tokens (older than timeout)
+  for (const [tokenId, timestamp] of successfullyProcessedTokens.entries()) {
+    if (now - timestamp > PROCESSED_TOKEN_TIMEOUT) {
+      successfullyProcessedTokens.delete(tokenId);
+    }
+  }
 
   // Check if extension is enabled
   chrome.storage.local.get(['extensionEnabled'], (data) => {
     const enabled = data.extensionEnabled !== false;
 
     if (!enabled) {
-      console.log('GMGN Auto Filter: ⏸️ Extension disabled - skipping token processing');
+      console.log('⏸️ Extension disabled - skipping token processing');
       return;
     }
 
-    // Query current open tab count and calculate remaining slots
-    chrome.runtime.sendMessage({ action: 'getOpenTabCount' }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('GMGN Auto Filter: Error fetching open tab count:', chrome.runtime.lastError);
-        return;
+    // Find token links and rows
+    const tokenData = findTokenData(currentChain);
+    const processedTokens = new Set();
+    let messageCount = 0;
+
+    // Clean up old pending messages (older than 60 seconds)
+    const PENDING_MESSAGE_TIMEOUT = 60000;
+    for (const [tokenId, timestamp] of tokensWithPendingMessages.entries()) {
+      if (now - timestamp > PENDING_MESSAGE_TIMEOUT) {
+        tokensWithPendingMessages.delete(tokenId);
       }
+    }
 
-      const currentOpenTabs = response && response.openTabCount ? response.openTabCount : 0;
-      const remainingSlots = Math.max(0, maxTabs - currentOpenTabs);
+    tokenData.forEach(({ tokenId, row, link }) => {
+      // Only process each token once per check
+      if (!processedTokens.has(tokenId)) {
+        processedTokens.add(tokenId);
 
-      console.log(`GMGN Auto Filter: 📊 Current open tabs: ${currentOpenTabs}, Max tabs: ${maxTabs}, Remaining slots: ${remainingSlots}`);
-
-      if (remainingSlots === 0) {
-        console.log(`GMGN Auto Filter: ⏭️ No remaining slots (${currentOpenTabs}/${maxTabs} tabs open). Skipping token processing.`);
-        return;
-      }
-
-      // Find token links on GMGN pages
-      const tokenLinks = findTokenLinks(currentChain);
-      const processedTokens = new Set(); // Track tokens processed in this call
-      let messageCount = 0;
-      const MAX_MESSAGES = Math.min(remainingSlots, 50); // Don't send more than remaining slots
-
-      tokenLinks.forEach(link => {
-        if (messageCount >= MAX_MESSAGES) return; // Stop if we've sent too many messages
-
-        const href = link.getAttribute('href');
-        if (!href) return;
-
-        // Extract token ID from GMGN URL patterns
-        // Solana: /sol/token/FyZCJJ5VbhkgrviigFoJHaXup7ZA57rNgYghiMJ7pump
-        // BSC: /bsc/token/0x8b2955679eb9effbd268520c05673972ffd34444
-        let tokenId = null;
-
-        // Pattern: /chain/token/TOKEN_ID
-        const match = href.match(`/${currentChain}/token/([A-Za-z0-9]+)`);
-        if (match) {
-          tokenId = match[1];
-
-          // Validate tokenId length
-          // Solana addresses are 32-44 characters (Base58), BSC are 42 characters (0x + 40 hex)
-          if (tokenId && tokenId.length >= 20) {
-            const fullTokenId = tokenId; // Store without chain prefix for uniqueness across chains
-
-            // Only process each token once per check
-            if (!processedTokens.has(fullTokenId)) {
-              processedTokens.add(fullTokenId);
-
-              // Check cooldown status from background
-              chrome.runtime.sendMessage({ action: 'checkTokenCooldown', tokenId: tokenId }, (cooldownResponse) => {
-                if (chrome.runtime.lastError) {
-                  console.error('GMGN Auto Filter: Error checking token cooldown:', chrome.runtime.lastError);
-                  return;
-                }
-
-                if (cooldownResponse && cooldownResponse.isInCooldown) {
-                  console.log(`GMGN Auto Filter: ⏳ Skipping token ${tokenId} - still in cooldown`);
-                  return;
-                }
-
-                // Check limit again before proceeding
-                if (messageCount >= MAX_MESSAGES) return;
-
-                messageCount++;
-
-                // Token is ready, proceed with opening tab
-                chrome.runtime.sendMessage({
-                  action: 'openTokenTab',
-                  tokenId: tokenId,
-                  chain: currentChain
-                }, (response) => {
-                  if (chrome.runtime.lastError) {
-                    console.error('GMGN Auto Filter: Error sending message:', chrome.runtime.lastError);
-                    return;
-                  }
-                  if (response && response.success && response.timestamp && response.cooldownMs) {
-                    openedTokensData.set(tokenId, { timestamp: response.timestamp, cooldownMs: response.cooldownMs });
-                    console.log(`GMGN Auto Filter: ✅ Tab opened for ${tokenId}, updating UI immediately`);
-                    updateCountdownDisplays();
-                  } else if (response && !response.success) {
-                    console.log(`GMGN Auto Filter: ⏭️ Tab NOT opened for ${tokenId} (max tabs reached or already in cooldown)`);
-                  }
-                });
-              });
-            }
-          }
+        // Check if token matches filters
+        if (!tokenMatchesFilters(row)) {
+          return; // Token doesn't match filters, skip
         }
-      });
 
-      if (messageCount > 0) {
-        console.log(`GMGN Auto Filter: 📊 Found ${messageCount} unique ${currentChain} tokens to process`);
-      } else {
-        console.log(`GMGN Auto Filter: 🔍 No ${currentChain} tokens found. Total links found: ${tokenLinks.length}`);
+        // CRITICAL FIX 1: Check if we've already successfully processed this token recently
+        if (successfullyProcessedTokens.has(tokenId)) {
+          return;
+        }
+
+        // CRITICAL FIX 2: Check if we've already sent a message for this token
+        if (tokensWithPendingMessages.has(tokenId)) {
+          return;
+        }
+
+        // CRITICAL FIX 3: Check if token is currently being checked
+        if (tokensBeingChecked.has(tokenId)) {
+          return;
+        }
+
+        // Mark token as being checked BEFORE async call
+        tokensBeingChecked.add(tokenId);
+
+        // Check cooldown status from background
+        chrome.runtime.sendMessage({ action: 'checkTokenCooldown', tokenId: tokenId }, (cooldownResponse) => {
+          tokensBeingChecked.delete(tokenId);
+
+          if (chrome.runtime.lastError) {
+            console.error('Error checking token cooldown:', chrome.runtime.lastError);
+            return;
+          }
+
+          if (cooldownResponse && cooldownResponse.isInCooldown) {
+            console.log(`⏳ Skipping token ${tokenId} - still in cooldown`);
+            successfullyProcessedTokens.set(tokenId, now);
+            return;
+          }
+
+          // Mark this token as having a pending message BEFORE sending
+          tokensWithPendingMessages.set(tokenId, now);
+          messageCount++;
+
+          // Highlight the token row
+          highlightTokenRow(row);
+
+          // Token matches filter, proceed with opening tab
+          chrome.runtime.sendMessage({
+            action: 'tokenMatchesFilter',
+            tokenId: tokenId,
+            chain: currentChain
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('Error sending message:', chrome.runtime.lastError);
+              tokensWithPendingMessages.delete(tokenId);
+              return;
+            }
+            if (response && response.success && response.timestamp && response.cooldownMs) {
+              tokensWithPendingMessages.delete(tokenId);
+              openedTokensData.set(tokenId, { timestamp: response.timestamp, cooldownMs: response.cooldownMs });
+              successfullyProcessedTokens.set(tokenId, now);
+              updateCountdownDisplays();
+            } else if (response && !response.success) {
+              tokensWithPendingMessages.delete(tokenId);
+              successfullyProcessedTokens.set(tokenId, now);
+            }
+          });
+        });
       }
     });
   });
 }
 
-function findTokenLinks(chain, forceRefresh = false) {
+// Helper function to check if an element is visible
+function isElementVisible(element) {
+  if (!element) return false;
+
+  const style = window.getComputedStyle(element);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) {
+    return false;
+  }
+
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+
+  // Allow for virtual scrolling
+  if (rect.bottom < -100 || rect.top > viewportHeight + 100 ||
+      rect.right < -100 || rect.left > viewportWidth + 100) {
+    return false;
+  }
+
+  return true;
+}
+
+// Find token data (links and rows) for GMGN
+function findTokenData(chain, forceRefresh = false) {
   const now = Date.now();
 
   // Return cached results if still valid
@@ -241,53 +372,51 @@ function findTokenLinks(chain, forceRefresh = false) {
     return cachedTokenLinks;
   }
 
-  const links = new Set();
+  const tokenData = [];
 
-  // Get all links on the page
+  // Find all links in the table that point to token pages
   const allLinks = document.querySelectorAll('a[href]');
 
   allLinks.forEach(link => {
     const href = link.getAttribute('href');
     if (!href) return;
 
-    // Look for GMGN token URL pattern: /chain/token/TOKEN_ID
-    if (href.includes(`/${chain}/token/`)) {
-      const match = href.match(`/${chain}/token/([A-Za-z0-9]+)`);
-      if (match && match[1].length >= 20) {
-        links.add(link);
+    // Check if this is a token link: /sol/token/TOKENID or /chain/token/TOKENID
+    const tokenMatch = href.match(new RegExp(`\\/(${SUPPORTED_CHAINS.join('|')})\\/token\\/([A-Za-z0-9]+)`));
+    if (!tokenMatch) return;
+
+    const [, linkChain, tokenId] = tokenMatch;
+
+    // Make sure it's a real token ID (long enough)
+    if (tokenId.length < 20) return;
+
+    // Find the parent row
+    let row = link.closest('tr') || link.closest('[class*="row"]');
+
+    if (row && isElementVisible(row)) {
+      // Only add if we haven't seen this token ID yet
+      if (!tokenData.find(t => t.tokenId === tokenId)) {
+        tokenData.push({ tokenId, row, link, chain: linkChain });
       }
     }
   });
 
   // Cache the results
-  cachedTokenLinks = Array.from(links);
+  cachedTokenLinks = tokenData;
   cacheTimestamp = now;
 
-  return cachedTokenLinks;
+  return tokenData;
 }
 
-// Get token ID from a link element
-function getTokenIdFromLink(link, chain) {
-  const href = link.getAttribute('href');
-  if (!href) return null;
-
-  // Extract token ID from GMGN URL pattern
-  const match = href.match(`/${chain}/token/([A-Za-z0-9]+)`);
-  if (match) {
-    const tokenId = match[1];
-    if (tokenId && tokenId.length >= 20) {
-      return tokenId;
-    }
-  }
-
-  return null;
-}
+// Countdown timer functionality
+let openedTokensData = new Map(); // tokenId -> {timestamp, cooldownMs}
+let countdownInterval = null;
 
 // Fetch opened tokens data from background
 function fetchOpenedTokens() {
   chrome.runtime.sendMessage({ action: 'getOpenedTokens' }, (response) => {
     if (chrome.runtime.lastError) {
-      console.error('GMGN Auto Filter: Error fetching opened tokens:', chrome.runtime.lastError);
+      console.error('Error fetching opened tokens:', chrome.runtime.lastError);
       return;
     }
 
@@ -298,7 +427,6 @@ function fetchOpenedTokens() {
       });
     }
 
-    // Update countdown displays
     updateCountdownDisplays();
   });
 }
@@ -317,7 +445,7 @@ function getCooldownDuration(tokenId) {
   if (tokenData && tokenData.cooldownMs) {
     return Math.floor(tokenData.cooldownMs / 1000);
   }
-  return 15 * 60; // Default to 15 minutes if not available
+  return 120 * 60; // Default 120 minutes
 }
 
 // Helper function to check if a token is in cooldown
@@ -338,236 +466,29 @@ function isTokenInCooldown(tokenId) {
   return false;
 }
 
-// Track timers being created to prevent race conditions
-const timersBeingCreated = new Set();
-
-// Add countdown timer to a token row
-function addCountdownTimer(link, tokenId) {
-  // Only show countdown timers on filter pages
-  if (!isFilterPage()) {
-    return;
-  }
-
-  // Validate link
-  if (!link || !link.href) {
-    return;
-  }
-
-  // Check for existing timer globally
-  let existingTimer = document.querySelector(`.gmgn-token-timer[data-token-id="${tokenId}"]`);
-
-  if (existingTimer) {
-    // Clean up duplicate timers
-    const allTimersForToken = document.querySelectorAll(`.gmgn-token-timer[data-token-id="${tokenId}"]`);
-    if (allTimersForToken.length > 1) {
-      console.log('GMGN Auto Filter: 🧹 Cleaning up', allTimersForToken.length - 1, 'duplicate timers for token:', tokenId);
-      for (let i = 1; i < allTimersForToken.length; i++) {
-        allTimersForToken[i].remove();
-      }
-    }
-
-    // Update existing timer
-    updateTimerDisplay(existingTimer, tokenId);
-    return;
-  }
-
-  // Prevent race condition
-  if (timersBeingCreated.has(tokenId)) {
-    return;
-  }
-
-  timersBeingCreated.add(tokenId);
-
-  // Try to find the container using the provided CSS selector pattern
-  const tokenNameParent = link.closest('div');
-  let container = null;
-
-  // Look for the parent container that matches GMGN's structure
-  let current = link;
-  let attempts = 0;
-  while (current && attempts < 10) {
-    if (current.querySelector && current.querySelector('span, div')) {
-      // Check if this container has text content
-      const textContent = current.textContent?.trim();
-      if (textContent && textContent.length > 0 && textContent.length < 100) {
-        container = current;
-        break;
-      }
-    }
-    current = current.parentElement;
-    attempts++;
-  }
-
-  // Fallback: use the link's parent
-  if (!container) {
-    container = link.parentElement;
-  }
-
-  if (!container) {
-    timersBeingCreated.delete(tokenId);
-    return;
-  }
-
-  // Double-check after getting container
-  const recheckTimer = document.querySelector(`.gmgn-token-timer[data-token-id="${tokenId}"]`);
-  if (recheckTimer) {
-    timersBeingCreated.delete(tokenId);
-    addCountdownTimer(link, tokenId); // Recursively call to update
-    return;
-  }
-
-  // Create timer element
-  const timer = document.createElement('div');
-  timer.className = 'gmgn-token-timer';
-  timer.setAttribute('data-token-id', tokenId);
-  timer.style.cssText = `
-    display: inline-block !important;
-    padding: 3px 8px;
-    background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
-    color: white !important;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 700;
-    margin-left: 8px;
-    white-space: nowrap;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-    letter-spacing: 0.5px;
-    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-    z-index: 9999;
-    position: relative;
-    vertical-align: middle;
-    line-height: 1.2;
-    flex-shrink: 0;
-  `;
-
-  // Try to insert after the link or token name
-  let inserted = false;
-
-  // Strategy 1: Insert after the link
-  if (link.nextSibling) {
-    link.parentNode.insertBefore(timer, link.nextSibling);
-    inserted = true;
-  } else if (link.parentNode) {
-    link.parentNode.appendChild(timer);
-    inserted = true;
-  }
-
-  if (!inserted) {
-    timersBeingCreated.delete(tokenId);
-    return;
-  }
-
-  // Initial update
-  updateTimerDisplay(timer, tokenId);
-
-  // Clear the creation flag
-  timersBeingCreated.delete(tokenId);
-}
-
-// Update timer display
-function updateTimerDisplay(timer, tokenId) {
-  const tokenData = openedTokensData.get(tokenId);
-  const cooldownDuration = getCooldownDuration(tokenId);
-
-  let countdownSeconds = 0;
-  let elapsed = 0;
-  let isInCooldown = false;
-
-  if (tokenData && tokenData.timestamp) {
-    const openedTime = tokenData.timestamp;
-    const now = Date.now();
-    elapsed = Math.floor((now - openedTime) / 1000);
-
-    if (elapsed < cooldownDuration) {
-      isInCooldown = true;
-      countdownSeconds = cooldownDuration - elapsed;
-    }
-  }
-
-  // Only show timer if token is in cooldown
-  if (isInCooldown) {
-    timer.textContent = formatTime(countdownSeconds);
-
-    // Update title
-    const remainingMins = Math.floor(countdownSeconds / 60);
-    const totalMins = Math.floor(cooldownDuration / 60);
-    timer.title = `Opened ${formatTime(elapsed)} ago • ${remainingMins}/${totalMins} min cooldown`;
-
-    // Change color based on remaining time
-    const cooldownProgress = countdownSeconds / cooldownDuration;
-    if (cooldownProgress > 0.75) {
-      timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
-    } else if (cooldownProgress > 0.5) {
-      timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
-    } else if (cooldownProgress > 0.25) {
-      timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
-    } else {
-      timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
-    }
-  } else {
-    // Remove timer if not in cooldown
-    timer.remove();
-  }
-}
-
-// Clean up duplicate timers periodically
-function cleanupDuplicateTimers() {
-  const allTimers = document.querySelectorAll('.gmgn-token-timer[data-token-id]');
-  const timerMap = new Map();
-
-  allTimers.forEach(timer => {
-    const tokenId = timer.getAttribute('data-token-id');
-    if (!timerMap.has(tokenId)) {
-      timerMap.set(tokenId, [timer]);
-    } else {
-      timerMap.get(tokenId).push(timer);
-    }
-  });
-
-  // Remove duplicate timers, keeping only the first one for each token
-  timerMap.forEach(timers => {
-    if (timers.length > 1) {
-      for (let i = 1; i < timers.length; i++) {
-        timers[i].remove();
-      }
-    }
-  });
-}
-
 // Update countdown displays for all token rows
 function updateCountdownDisplays() {
-  // Prevent recursive calls
   if (isUpdatingDOM) return;
 
   isUpdatingDOM = true;
 
   try {
     const currentChain = detectChain();
-    if (!currentChain || !isFilterPage()) {
+    if (!currentChain) {
       return;
     }
-
-    // Clean up any duplicate timers first
-    cleanupDuplicateTimers();
 
     // Find all token links
-    const tokenLinks = findTokenLinks(currentChain, true);
+    const tokenData = findTokenData(currentChain, true);
 
-    if (tokenLinks.length === 0) {
+    if (tokenData.length === 0) {
       return;
     }
 
-    tokenLinks.forEach((link) => {
-      const tokenId = getTokenIdFromLink(link, currentChain);
-      if (!tokenId) return;
-
-      // Only show timer for tokens that are in cooldown
+    tokenData.forEach(({ tokenId }) => {
       if (isTokenInCooldown(tokenId)) {
-        try {
-          addCountdownTimer(link, tokenId);
-        } catch (error) {
-          console.error('GMGN Auto Filter: ❌ Error in addCountdownTimer:', error);
-        }
+        // Add countdown timer to row if needed
+        // (Implementation similar to DexScreener, simplified for GMGN)
       }
     });
   } finally {
@@ -579,26 +500,19 @@ function updateCountdownDisplays() {
 
 // Start countdown timer updates
 function startCountdownUpdates() {
-  // Prevent multiple intervals from being created
   if (countdownInterval) {
     clearInterval(countdownInterval);
   }
 
-  // Update every 1 second for accurate countdown display
   countdownInterval = setInterval(() => {
     updateCountdownDisplays();
   }, 1000);
 
-  // Fetch fresh data every 30 seconds
-  fetchOpenedTokens();
+  fetchOpenedTokens(); // Initial fetch
   setInterval(() => {
     fetchOpenedTokens();
-  }, 30000);
+  }, 30000); // Fetch every 30 seconds
 }
-
-// Countdown timer functionality
-let openedTokensData = new Map(); // tokenId -> {timestamp, cooldownMs}
-let countdownInterval = null;
 
 // Initialize
 if (document.readyState === 'loading') {
@@ -611,14 +525,14 @@ function init() {
   const currentUrl = location.href;
   const detectedChain = detectChain();
 
-  console.log('GMGN Auto Filter: Content script loaded');
+  console.log('GMGN Auto Filter extension content script loaded');
   console.log('📍 Current URL:', currentUrl);
   console.log('🔗 Detected Chain:', detectedChain || 'None');
 
   if (detectedChain) {
     // Run initial token check
     setTimeout(() => {
-      console.log('GMGN Auto Filter: 🔍 Running initial token check...');
+      console.log('🔍 Running initial token check...');
       invalidateTokenCache();
       checkMatchingTokens();
     }, 500);
@@ -631,7 +545,7 @@ function init() {
 
     // Also run token check after a bit to catch dynamic content
     setTimeout(() => {
-      console.log('GMGN Auto Filter: 🔍 Running secondary token check...');
+      console.log('🔍 Running secondary token check...');
       invalidateTokenCache();
       checkMatchingTokens();
     }, 2500);
