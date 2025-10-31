@@ -3,16 +3,15 @@
 let openedTokens = new Map(); // tokenId -> timestamp
 let tokenUrlToId = new Map(); // tokenUrl -> tokenId
 let tabIdToTokenInfo = new Map(); // tabId -> {tokenId, tokenUrl, timestamp}
+let tokensBeingOpened = new Set(); // Track tokens that are currently being opened (to prevent race conditions)
 let settings = {
-  cooldownMinutes: 15,
-  maxTabs: 10
+  cooldownMinutes: 15
 };
 
 // Load settings from storage
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['cooldownMinutes', 'maxTabs']);
+  const data = await chrome.storage.local.get(['cooldownMinutes']);
   if (data.cooldownMinutes) settings.cooldownMinutes = data.cooldownMinutes;
-  if (data.maxTabs) settings.maxTabs = data.maxTabs;
   console.log('Settings loaded:', settings);
 }
 
@@ -105,11 +104,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// Function to open token tab with configurable cooldown and max tabs limit
+// Function to open token tab with configurable cooldown
 async function openTokenTab(tokenId, chain = 'solana') {
   try {
     const now = Date.now();
     const cooldownPeriod = settings.cooldownMinutes * 60 * 1000; // Convert to milliseconds
+
+    // CRITICAL FIX: Check if this token is already being opened (prevents race conditions)
+    // Create a unique key for this token
+    const tokenKey = `${chain}:${tokenId}`;
+    if (tokensBeingOpened.has(tokenKey)) {
+      console.log(`Token ${tokenId} (${chain}) is already being opened (duplicate request ignored)`);
+      return false; // Already being opened by another request
+    }
 
     // Check cooldown with configured period
     const lastOpened = openedTokens.get(tokenId);
@@ -130,13 +137,8 @@ async function openTokenTab(tokenId, chain = 'solana') {
       }
     }
 
-    // IMPORTANT: Check maximum tabs limit BEFORE opening new tabs
-    // Use tabIdToTokenInfo.size to count actually open tabs (not tokens in cooldown)
-    const openedTokenCount = tabIdToTokenInfo.size;
-    if (openedTokenCount >= settings.maxTabs) {
-      console.log(`Maximum tabs limit reached (${settings.maxTabs}/${openedTokenCount}). Skipping ${tokenId} (${chain})`);
-      return false; // Max tabs reached, could not open
-    }
+    // Mark token as being opened BEFORE creating tab (prevents race conditions)
+    tokensBeingOpened.add(tokenKey);
 
     // Open new tab and store the mapping
     const createdTab = await chrome.tabs.create({ url: tokenUrl, active: false });
@@ -144,7 +146,10 @@ async function openTokenTab(tokenId, chain = 'solana') {
     tokenUrlToId.set(tokenUrl, tokenId);
     tabIdToTokenInfo.set(createdTab.id, { tokenId, tokenUrl, timestamp: now });
 
-    console.log(`✅ Opened token ${tokenId} on ${chain} (${tabIdToTokenInfo.size}/${settings.maxTabs} tabs)`);
+    // Remove from "being opened" set after successful creation
+    tokensBeingOpened.delete(tokenKey);
+
+    console.log(`✅ Opened token ${tokenId} on ${chain} (${tabIdToTokenInfo.size} tabs)`);
 
 
     // Clean up old entries (older than cooldown period)
@@ -170,6 +175,9 @@ async function openTokenTab(tokenId, chain = 'solana') {
     return true; // Successfully opened tab
   } catch (error) {
     console.error('Error opening token tab:', error);
+    // Make sure to remove from "being opened" set on error
+    const tokenKey = `${chain || 'solana'}:${tokenId}`;
+    tokensBeingOpened.delete(tokenKey);
     return false;
   }
 }
@@ -191,13 +199,6 @@ async function openFilterUrl(url) {
         openedFilterUrls.add(url);
         return;
       }
-    }
-
-    // Check maximum tabs limit
-    const totalOpenTabs = openedFilterUrls.size + openedTokens.size;
-    if (totalOpenTabs >= settings.maxTabs) {
-      console.log(`⚠️ Maximum tabs limit reached (${settings.maxTabs}). Skipping filter URL`);
-      return;
     }
 
     // Open new tab with filter URL

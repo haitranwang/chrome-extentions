@@ -190,7 +190,6 @@ When you modify filter parameters in the URL:
 - The extension detects the change automatically
 - Opens a new tab with the filtered view
 - Prevents duplicate filter URLs
-- Respects your maximum tabs setting
 
 This allows you to quickly compare different filter combinations side-by-side.
 

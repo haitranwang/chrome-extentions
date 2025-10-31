@@ -14,7 +14,6 @@ A Chrome extension for DexScreener.com that automatically opens tabs for tokens 
 ### Auto-Open Token Tabs
 - Automatically detects and opens tabs for tokens on any supported chain
 - Configurable cooldown period (default: 15 minutes)
-- Configurable maximum tabs limit (default: 10)
 - Tracks opened tokens to prevent duplicates
 - Opens tabs in background for uninterrupted browsing
 
@@ -42,7 +41,6 @@ A Chrome extension for DexScreener.com that automatically opens tabs for tokens 
 1. Load the extension in Chrome (see Installation)
 2. Configure settings by clicking the extension icon (optional):
    - Set cooldown period (1-60 minutes)
-   - Set maximum tabs (1-100)
    - Click "Save"
 3. Navigate to [dexscreener.com](https://dexscreener.com) on any supported chain
 4. The extension automatically opens new tabs for detected tokens
@@ -51,7 +49,6 @@ A Chrome extension for DexScreener.com that automatically opens tabs for tokens 
 ### Configuration Options
 
 **Cooldown Period**: Time before opening the same token again (default: 15 minutes)
-**Maximum Tabs**: Total limit on token tabs and filter URL tabs opened (default: 10)
 
 ### Supported Chains
 
@@ -68,9 +65,8 @@ The extension supports 17 blockchain networks: Solana, BSC, Base, Ethereum, Poly
 ### Tab Opening
 1. Checks if the token was recently opened (cooldown period)
 2. Verifies if the token tab is already open
-3. Ensures the maximum tabs limit is not exceeded
-4. Opens the token page in a new background tab
-5. Records the token and timestamp for tracking
+3. Opens the token page in a new background tab
+4. Records the token and timestamp for tracking
 
 ### Filter URL Detection
 1. Monitors URL changes on dexscreener.com
@@ -86,7 +82,7 @@ The extension supports 17 blockchain networks: Solana, BSC, Base, Ethereum, Poly
 - **Background Service Worker**: Manages tab opening with cooldown tracking and settings
 - **Content Scripts**: Detects token links and URL changes on dexscreener.com pages
 - **Popup UI**: Provides settings interface for configuration
-- **Storage**: Saves user settings (cooldown, max tabs)
+- **Storage**: Saves user settings (cooldown)
 
 ### Permissions
 
@@ -140,7 +136,6 @@ dexscreener-auto-filter/
 ### Tabs not opening automatically
 - Make sure you're on dexscreener.com with a supported chain
 - Check browser console for errors (F12)
-- Ensure maximum tabs limit is not reached
 - Verify cooldown period hasn't expired
 - Try reloading the page
 

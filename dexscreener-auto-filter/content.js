@@ -23,7 +23,7 @@ function debounce(func, wait) {
 // Cache for token links to avoid repeated DOM queries
 let cachedTokenLinks = null;
 let cacheTimestamp = 0;
-const CACHE_DURATION = 2000; // Cache for 2 seconds
+const CACHE_DURATION = 500; // Cache for 500ms (reduced to catch filter changes faster)
 
 // Invalidate cache
 function invalidateTokenCache() {
@@ -75,9 +75,11 @@ function detectChain() {
   return null;
 }
 
-// Check if we're on a new-pairs page
+// Check if we're on a new-pairs page OR main listing page
 function isNewPairsPage() {
-  return location.href.includes('/new-pairs/');
+  // Support both new-pairs pages and main chain listing pages
+  return location.href.includes('/new-pairs/') ||
+         /\/[^\/]+(\?|$)/.test(location.pathname); // matches /solana or /ethereum etc.
 }
 
 function checkMatchingTokens() {
@@ -92,26 +94,54 @@ function checkMatchingTokens() {
     return;
   }
 
-  // Get max tabs from settings to limit messages sent
-  chrome.storage.local.get(['maxTabs'], (data) => {
-    const maxTabs = data.maxTabs || 10;
-    processTokens(currentChain, maxTabs);
-  });
+  // Process all matching tokens
+  processTokens(currentChain);
 }
 
 // Track last processed tokens to avoid reprocessing
 let lastProcessedTokens = new Set();
 let lastProcessCheck = 0;
-const PROCESS_INTERVAL = 2000; // Only process every 2 seconds max
+const PROCESS_INTERVAL = 2000; // Only process every 2 seconds max (increased to reduce duplicate processing)
 
-function processTokens(currentChain, maxTabs) {
+// Track tokens that have messages sent (to prevent duplicate tab opening)
+// Maps tokenId -> timestamp when message was sent
+let tokensWithPendingMessages = new Map();
+
+// Track tokens that are currently being checked (awaiting cooldown response)
+// This prevents the same token from being checked multiple times concurrently
+let tokensBeingChecked = new Set();
+
+// Track successfully processed tokens to avoid reprocessing
+// Maps tokenId -> timestamp when successfully opened or determined to be in cooldown
+let successfullyProcessedTokens = new Map();
+const PROCESSED_TOKEN_TIMEOUT = 60000; // Remember processed tokens for 60 seconds
+
+function processTokens(currentChain) {
   const now = Date.now();
 
   // Skip if we've recently processed tokens
   if (now - lastProcessCheck < PROCESS_INTERVAL) {
     return;
   }
+
+  // Update timestamp BEFORE processing (prevents race conditions)
   lastProcessCheck = now;
+
+  // CRITICAL: Only process tokens on listing pages, not on token detail pages
+  // Token detail pages have URLs like /solana/TOKENID (single token ID in path)
+  const currentUrl = location.href;
+  const tokenDetailPagePattern = new RegExp(`/${currentChain}/[A-Za-z0-9]{20,}(?:[?#]|$)`);
+  if (tokenDetailPagePattern.test(currentUrl)) {
+    // We're on a token detail page - don't process tokens here
+    return;
+  }
+
+  // Clean up old successfully processed tokens (older than timeout)
+  for (const [tokenId, timestamp] of successfullyProcessedTokens.entries()) {
+    if (now - timestamp > PROCESSED_TOKEN_TIMEOUT) {
+      successfullyProcessedTokens.delete(tokenId);
+    }
+  }
 
   // Check if extension is enabled
   chrome.storage.local.get(['extensionEnabled'], (data) => {
@@ -122,36 +152,27 @@ function processTokens(currentChain, maxTabs) {
       return;
     }
 
-    // Query current open tab count and calculate remaining slots
-    chrome.runtime.sendMessage({ action: 'getOpenTabCount' }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('Error fetching open tab count:', chrome.runtime.lastError);
-        return;
+    // Multiple strategies to find token links
+    const tokenLinks = findTokenLinks(currentChain);
+    const processedTokens = new Set(); // Track tokens processed in this call
+    let messageCount = 0;
+
+    // Known non-token page identifiers to exclude
+    const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
+
+    // Clean up old pending messages (older than 60 seconds) to allow retry if needed
+    const PENDING_MESSAGE_TIMEOUT = 60000; // 60 seconds
+    for (const [tokenId, timestamp] of tokensWithPendingMessages.entries()) {
+      if (now - timestamp > PENDING_MESSAGE_TIMEOUT) {
+        tokensWithPendingMessages.delete(tokenId);
       }
+    }
 
-      const currentOpenTabs = response && response.openTabCount ? response.openTabCount : 0;
-      const remainingSlots = Math.max(0, maxTabs - currentOpenTabs);
+    // Note: We don't clear tokensBeingChecked here because tokens might still be
+    // awaiting async responses. The Set will be cleaned naturally when responses arrive.
 
-      console.log(`📊 Current open tabs: ${currentOpenTabs}, Max tabs: ${maxTabs}, Remaining slots: ${remainingSlots}`);
-
-      if (remainingSlots === 0) {
-        console.log(`⏭️ No remaining slots (${currentOpenTabs}/${maxTabs} tabs open). Skipping token processing.`);
-        return;
-      }
-
-      // Multiple strategies to find token links
-      const tokenLinks = findTokenLinks(currentChain);
-      const processedTokens = new Set(); // Track tokens processed in this call
-      let messageCount = 0;
-      const MAX_MESSAGES = Math.min(remainingSlots, 50); // Don't send more than remaining slots
-
-      // Known non-token page identifiers to exclude
-      const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
-
-      tokenLinks.forEach(link => {
-        if (messageCount >= MAX_MESSAGES) return; // Stop if we've sent too many messages
-
-        const href = link.getAttribute('href');
+    tokenLinks.forEach(link => {
+      const href = link.getAttribute('href');
 
       // Try multiple patterns to extract token ID
       let tokenId = null;
@@ -186,25 +207,36 @@ function processTokens(currentChain, maxTabs) {
         }
       }
 
-      // Pattern 3: Check if href contains a valid token ID (long alphanumeric)
-      if (!tokenId) {
-        match = href.match(/([A-Za-z0-9]{30,})/); // Token IDs are usually long
-        if (match) {
-          tokenId = match[1];
-        }
-      }
-
       if (tokenId) {
-        const fullTokenId = `${currentChain}:${tokenId}`; // Include chain in ID
-
         // Only process each token once per check
-        if (!processedTokens.has(fullTokenId)) {
-          processedTokens.add(fullTokenId);
+        if (!processedTokens.has(tokenId)) {
+          processedTokens.add(tokenId);
 
-          // Check if we've hit the limit
+          // CRITICAL FIX 1: Check if we've already successfully processed this token recently
+          // This prevents reprocessing the same token multiple times
+          if (successfullyProcessedTokens.has(tokenId)) {
+            return; // Skip - already processed recently
+          }
+
+          // CRITICAL FIX 2: Check if we've already sent a message for this token
+          // This prevents duplicate tab opening when processTokens is called multiple times
+          if (tokensWithPendingMessages.has(tokenId)) {
+            return; // Skip - message already pending
+          }
+
+          // CRITICAL FIX 3: Check if token is currently being checked (prevents concurrent checks)
+          if (tokensBeingChecked.has(tokenId)) {
+            return; // Skip - already checking
+          }
+
+          // Mark token as being checked BEFORE async call (prevents race conditions)
+          tokensBeingChecked.add(tokenId);
 
           // Check cooldown status from background
           chrome.runtime.sendMessage({ action: 'checkTokenCooldown', tokenId: tokenId }, (cooldownResponse) => {
+            // Remove from being checked when response arrives
+            tokensBeingChecked.delete(tokenId);
+
             if (chrome.runtime.lastError) {
               console.error('Error checking token cooldown:', chrome.runtime.lastError);
               return;
@@ -212,12 +244,13 @@ function processTokens(currentChain, maxTabs) {
 
             if (cooldownResponse && cooldownResponse.isInCooldown) {
               console.log(`⏳ Skipping token ${tokenId} - still in cooldown (verified by background)`);
+              // Mark as successfully processed (even though skipped, we don't want to check again)
+              successfullyProcessedTokens.set(tokenId, now);
               return;
             }
 
-            // Check limit again before proceeding
-            if (messageCount >= MAX_MESSAGES) return;
-
+            // Mark this token as having a pending message BEFORE sending
+            tokensWithPendingMessages.set(tokenId, now);
             messageCount++;
 
             // Token is ready, proceed with opening tab
@@ -228,14 +261,22 @@ function processTokens(currentChain, maxTabs) {
             }, (response) => {
               if (chrome.runtime.lastError) {
                 console.error('Error sending message:', chrome.runtime.lastError);
+                // Remove from pending on error so it can be retried
+                tokensWithPendingMessages.delete(tokenId);
                 return;
               }
               if (response && response.success && response.timestamp && response.cooldownMs) {
+                // Tab successfully opened - remove from pending (tab is now tracked by background)
+                tokensWithPendingMessages.delete(tokenId);
                 openedTokensData.set(tokenId, { timestamp: response.timestamp, cooldownMs: response.cooldownMs });
-                console.log(`✅ Tab opened for ${tokenId}, updating UI immediately`);
+                // Mark as successfully processed
+                successfullyProcessedTokens.set(tokenId, now);
                 updateCountdownDisplays();
               } else if (response && !response.success) {
-                console.log(`⏭️ Tab NOT opened for ${tokenId} (max tabs reached or already in cooldown)`);
+                // Tab not opened (e.g., duplicate or error) - remove from pending
+                tokensWithPendingMessages.delete(tokenId);
+                // Still mark as processed to avoid immediate retry
+                successfullyProcessedTokens.set(tokenId, now);
               }
             });
           });
@@ -243,20 +284,57 @@ function processTokens(currentChain, maxTabs) {
       }
     });
 
-    if (messageCount > 0) {
-      console.log(`📊 Found ${messageCount} unique ${currentChain} tokens to process (maxTabs: ${maxTabs}, remainingSlots: ${remainingSlots})`);
-    } else {
-      console.log(`🔍 No ${currentChain} tokens found. Total links found: ${tokenLinks.length}`);
-      // Debug: Show sample of links found
-      if (tokenLinks.length > 0 && tokenLinks.length <= 5) {
-        tokenLinks.forEach(link => {
-          console.log('   Link:', link.getAttribute('href'));
-        });
-      }
-    }
-    }); // Close getOpenTabCount callback
+    // Logging removed for cleaner output
   }); // Close chrome.storage.local.get callback
 }
+// Helper function to check if an element is visible
+function isElementVisible(element) {
+  if (!element) return false;
+
+  // Check computed style for visibility and display
+  const style = window.getComputedStyle(element);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+    return false;
+  }
+
+  // Check if element has zero dimensions (truly hidden)
+  const rect = element.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) {
+    return false;
+  }
+
+  // Check if element is WAY outside viewport (more than 100px away)
+  // This allows for virtual scrolling where elements may be slightly outside viewport
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+
+  // Consider visible if element is within 100px of viewport (to handle virtual scrolling)
+  if (rect.bottom < -100 || rect.top > viewportHeight + 100 ||
+      rect.right < -100 || rect.left > viewportWidth + 100) {
+    return false;
+  }
+
+  return true;
+}
+
+// Helper function to check if a table row is actually in the main data table (not in other sections)
+function isTokenRowInMainTable(row) {
+  if (!row) return false;
+
+  // Check if the row is inside the main table container
+  // DexScreener typically uses specific containers for the main data table
+  const mainTableContainer = row.closest('table, .ds-table-container, [data-testid*="table"], .table-container');
+
+  // If we can't find a table container, return true (assume it's valid)
+  if (!mainTableContainer) return true;
+
+  // Additional check: exclude rows that might be in headers, footers, or other sections
+  const parentSection = row.closest('[class*="header"], [class*="footer"], [class*="sidebar"], [class*="nav"]');
+  if (parentSection) return false;
+
+  return true;
+}
+
 function findTokenLinks(chain, forceRefresh = false) {
   const now = Date.now();
 
@@ -265,10 +343,11 @@ function findTokenLinks(chain, forceRefresh = false) {
     return cachedTokenLinks;
   }
 
-  const links = new Set();
+  // Use Map to track unique hrefs (to avoid duplicate links for same token)
+  const links = new Map();
 
   // Known non-token page identifiers to exclude
-  const excludedPaths = ['moonit', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
+  const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
 
   // OPTIMIZATION: Get all links once and filter, instead of multiple querySelectorAll calls
   const allLinks = document.querySelectorAll('a[href]');
@@ -277,11 +356,37 @@ function findTokenLinks(chain, forceRefresh = false) {
     const href = link.getAttribute('href');
     if (!href) return;
 
+    // CRITICAL FIX: Only process links that are in visible table rows
+    // Find the closest table row (token rows typically have .ds-dex-table-row class)
+    let isInVisibleRow = false;
+    const tableRow = link.closest('.ds-dex-table-row') || link.closest('tr');
+
+    if (tableRow) {
+      // Check if the table row is visible
+      isInVisibleRow = isElementVisible(tableRow);
+
+      // Additional check: ensure the row is in the main table (not in headers/footers)
+      if (isInVisibleRow && !isTokenRowInMainTable(tableRow)) {
+        isInVisibleRow = false;
+      }
+    } else {
+      // If no table row found, check if the link itself is visible
+      isInVisibleRow = isElementVisible(link);
+    }
+
+    // Skip this link if it's not in a visible row
+    if (!isInVisibleRow) {
+      return;
+    }
+
     // Strategy 1: Direct chain links
     if (href.includes(`/${chain}/`) && !excludedPaths.some(path => href.toLowerCase().includes(path))) {
       const match = href.match(`/${chain}/([A-Za-z0-9]+)`);
       if (match && match[1].length >= 20) {
-        links.add(link);
+        // Only add if we haven't seen this href before (prevents duplicate links for same token)
+        if (!links.has(href)) {
+          links.set(href, link);
+        }
         return; // Found, skip to next link
       }
     }
@@ -290,19 +395,17 @@ function findTokenLinks(chain, forceRefresh = false) {
     if (href.includes('/token/')) {
       const match = href.match(/\/token\/([A-Za-z0-9]+)/);
       if (match && match[1].length >= 20) {
-        links.add(link);
+        // Only add if we haven't seen this href before (prevents duplicate links for same token)
+        if (!links.has(href)) {
+          links.set(href, link);
+        }
         return;
       }
-    }
-
-    // Strategy 3: Long alphanumeric IDs
-    if (href.match(/([A-Za-z0-9]{30,})/) && !href.includes('/new-pairs')) {
-      links.add(link);
     }
   });
 
   // Cache the results
-  cachedTokenLinks = Array.from(links);
+  cachedTokenLinks = Array.from(links.values());
   cacheTimestamp = now;
 
   return cachedTokenLinks;
@@ -332,11 +435,6 @@ function getTokenIdFromLink(link, chain) {
     if (tokenId && tokenId.length >= 20) {
       return tokenId;
     }
-  }
-
-  match = href.match(/([A-Za-z0-9]{30,})/);
-  if (match) {
-    return match[1];
   }
 
   return null;
@@ -811,7 +909,6 @@ function updateCountdownDisplays() {
 
     // Find all token links - force refresh to get latest
     const tokenLinks = findTokenLinks(currentChain, true);
-    console.log('🔄 updateCountdownDisplays: Found', tokenLinks.length, 'token links');
 
     if (tokenLinks.length === 0) {
       return;
@@ -819,14 +916,12 @@ function updateCountdownDisplays() {
 
     tokenLinks.forEach((link, index) => {
     const tokenId = getTokenIdFromLink(link, currentChain);
-    console.log(`🔗 Link ${index}: tokenId=${tokenId || 'NO_ID'}, href=${link.href?.substring(0, 80)}`);
 
     if (!tokenId) return;
 
       // Only show timer for tokens that are in cooldown
       if (isTokenInCooldown(tokenId)) {
         try {
-          console.log('⏰ Calling addCountdownTimer for:', tokenId);
           addCountdownTimer(link, tokenId);
         } catch (error) {
           console.error('❌ Error in addCountdownTimer:', error);

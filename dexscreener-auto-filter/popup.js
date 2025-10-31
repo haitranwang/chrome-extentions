@@ -66,12 +66,9 @@ function switchTab(tabName) {
 
 // Load saved settings
 function loadSettings() {
-  chrome.storage.local.get(['cooldownMinutes', 'maxTabs', 'extensionEnabled'], (data) => {
+  chrome.storage.local.get(['cooldownMinutes', 'extensionEnabled'], (data) => {
     if (data.cooldownMinutes) {
       document.getElementById('cooldownMinutes').value = data.cooldownMinutes;
-    }
-    if (data.maxTabs) {
-      document.getElementById('maxTabs').value = data.maxTabs;
     }
     document.getElementById('extensionEnabled').checked = data.extensionEnabled !== false;
   });
@@ -92,21 +89,14 @@ function saveSettings(e) {
   e.preventDefault();
 
   const cooldownMinutes = parseInt(document.getElementById('cooldownMinutes').value);
-  const maxTabs = parseInt(document.getElementById('maxTabs').value);
 
   if (isNaN(cooldownMinutes) || cooldownMinutes < 1 || cooldownMinutes > 60) {
     showStatus('Invalid cooldown period (1-60 minutes)', 'error');
     return;
   }
 
-  if (isNaN(maxTabs) || maxTabs < 1 || maxTabs > 100) {
-    showStatus('Invalid maximum tabs (1-100)', 'error');
-    return;
-  }
-
   chrome.storage.local.set({
-    cooldownMinutes: cooldownMinutes,
-    maxTabs: maxTabs
+    cooldownMinutes: cooldownMinutes
   }, () => {
     showStatus('Settings saved!', 'success');
     loadStats();
@@ -117,13 +107,10 @@ function saveSettings(e) {
 function resetSettings() {
   if (confirm('Reset to default settings?')) {
     document.getElementById('cooldownMinutes').value = 15;
-    document.getElementById('maxTabs').value = 10;
     const cooldownMinutes = 15;
-    const maxTabs = 10;
 
     chrome.storage.local.set({
-      cooldownMinutes: cooldownMinutes,
-      maxTabs: maxTabs
+      cooldownMinutes: cooldownMinutes
     }, () => {
       showStatus('Settings reset to defaults!', 'success');
       loadStats();
