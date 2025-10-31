@@ -5,9 +5,18 @@ const SUPABASE_URL = 'https://putcecldtpverondjprx.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB1dGNlY2xkdHB2ZXJvbmRqcHJ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2Mzk0NjQsImV4cCI6MjA3NzIxNTQ2NH0.mNcGdDw_3F3MLT1jG0iX4LF-ffKtgsHII4SCOJqIBwY';
 
 let currentFilters = [];
+let browserFingerprint = null;
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   console.log('Popup DOM loaded');
+
+  // Initialize browser fingerprint
+  try {
+    browserFingerprint = await getBrowserFingerprint();
+    console.log('Browser fingerprint loaded:', browserFingerprint);
+  } catch (error) {
+    console.error('Error loading browser fingerprint:', error);
+  }
 
   loadSettings();
   loadStats();
@@ -209,12 +218,25 @@ async function loadFavorites() {
   const loadingFilters = document.getElementById('loadingFilters');
   const emptyState = document.getElementById('emptyState');
 
+  // Wait for browser fingerprint to be loaded
+  if (!browserFingerprint) {
+    try {
+      browserFingerprint = await getBrowserFingerprint();
+      console.log('Browser fingerprint loaded during favorites load:', browserFingerprint);
+    } catch (error) {
+      console.error('Error loading browser fingerprint:', error);
+      loadingFilters.textContent = 'Failed to initialize browser fingerprint';
+      return;
+    }
+  }
+
   try {
     loadingFilters.style.display = 'block';
     filtersList.innerHTML = '';
     emptyState.style.display = 'none';
 
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/dexscreener-filter`, {
+    // Filter by user_id to get only this user's favorites
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/dexscreener-filter?user_id=eq.${browserFingerprint}`, {
       method: 'GET',
       headers: {
         'apikey': SUPABASE_KEY,
@@ -293,6 +315,18 @@ function createFilterElement(filter) {
 async function addCurrentFilterToFavorites() {
   console.log('Add to favorites button clicked');
 
+  // Ensure browser fingerprint is loaded
+  if (!browserFingerprint) {
+    try {
+      browserFingerprint = await getBrowserFingerprint();
+      console.log('Browser fingerprint loaded during add:', browserFingerprint);
+    } catch (error) {
+      console.error('Error loading browser fingerprint:', error);
+      showFiltersStatus('❌ Failed to initialize browser fingerprint', 'error');
+      return;
+    }
+  }
+
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     const currentTab = tabs[0];
@@ -314,8 +348,8 @@ async function addCurrentFilterToFavorites() {
     const filterUrl = currentTab.url;
     console.log('Filter URL to add:', filterUrl);
 
-    // Check if already exists
-    if (currentFilters.some(f => f.filter === filterUrl)) {
+    // Check if already exists for this user
+    if (currentFilters.some(f => f.filter === filterUrl && f.user_id === browserFingerprint)) {
       console.log('Filter already exists');
       showFiltersStatus('⚠️ Filter already in favorites', 'error');
       return;
@@ -324,7 +358,7 @@ async function addCurrentFilterToFavorites() {
     console.log('Sending request to Supabase...');
     showFiltersStatus('Adding to favorites...', 'success');
 
-    // Add to Supabase
+    // Add to Supabase with user_id
     const response = await fetch(`${SUPABASE_URL}/rest/v1/dexscreener-filter`, {
       method: 'POST',
       headers: {
@@ -333,7 +367,10 @@ async function addCurrentFilterToFavorites() {
         'Content-Type': 'application/json',
         'Prefer': 'return=representation'
       },
-      body: JSON.stringify({ filter: filterUrl })
+      body: JSON.stringify({
+        filter: filterUrl,
+        user_id: browserFingerprint
+      })
     });
 
     console.log('Response status:', response.status);
@@ -362,11 +399,24 @@ async function deleteFilter(id) {
     return;
   }
 
+  // Ensure browser fingerprint is loaded for security
+  if (!browserFingerprint) {
+    try {
+      browserFingerprint = await getBrowserFingerprint();
+      console.log('Browser fingerprint loaded during delete:', browserFingerprint);
+    } catch (error) {
+      console.error('Error loading browser fingerprint:', error);
+      showFiltersStatus('❌ Failed to initialize browser fingerprint', 'error');
+      return;
+    }
+  }
+
   try {
-    console.log('Deleting filter with id:', id);
+    console.log('Deleting filter with id:', id, 'for user:', browserFingerprint);
     showFiltersStatus('Removing filter...', 'success');
 
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/dexscreener-filter?id=eq.${id}`, {
+    // Delete with both id and user_id for security (double-check ownership)
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/dexscreener-filter?id=eq.${id}&user_id=eq.${browserFingerprint}`, {
       method: 'DELETE',
       headers: {
         'apikey': SUPABASE_KEY,
