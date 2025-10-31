@@ -264,7 +264,7 @@ function createFilterElement(filter) {
       <div class="filter-date">Added ${formattedDate}</div>
     </div>
     <div class="filter-actions">
-      <button class="btn-icon delete" onclick="deleteFilter(${filter.id})" title="Delete">
+      <button class="btn-icon delete" data-filter-id="${filter.id}" title="Delete">
         🗑️
       </button>
     </div>
@@ -276,6 +276,14 @@ function createFilterElement(filter) {
     if (!e.target.classList.contains('btn-icon')) {
       chrome.tabs.create({ url: filter.filter });
     }
+  });
+
+  // Add delete button click handler
+  const deleteBtn = div.querySelector('.btn-icon.delete');
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); // Prevent the parent click handler from firing
+    const filterId = parseInt(deleteBtn.getAttribute('data-filter-id'));
+    deleteFilter(filterId);
   });
 
   return div;
