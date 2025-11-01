@@ -90,6 +90,24 @@ function handleExtensionToggle() {
   chrome.storage.local.set({ extensionEnabled: enabled }, () => {
     showStatus(enabled ? 'Extension enabled!' : 'Extension disabled!', 'success');
     loadStats();
+
+    // If enabling, send activation message to content script on current tab
+    if (enabled) {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const currentTab = tabs[0];
+        if (currentTab && currentTab.url?.includes('dexscreener.com')) {
+          // Send message to content script to start processing immediately
+          chrome.tabs.sendMessage(currentTab.id, { action: 'activateTokenProcessing' }, (response) => {
+            if (chrome.runtime.lastError) {
+              // Content script might not be ready yet, which is okay
+              console.log('Content script not ready:', chrome.runtime.lastError.message);
+            } else if (response && response.success) {
+              console.log('✅ Content script activated successfully');
+            }
+          });
+        }
+      });
+    }
   });
 }
 

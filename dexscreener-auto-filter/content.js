@@ -1122,3 +1122,42 @@ window.addEventListener('beforeunload', () => {
   cachedTokenLinks = null; // Clear cache on unload
 });
 
+// Listen for extension enable/disable state changes
+chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace === 'local' && changes.extensionEnabled) {
+    const enabled = changes.extensionEnabled.newValue !== false;
+    const currentChain = detectChain();
+
+    if (enabled && currentChain) {
+      console.log('✅ Extension enabled - starting immediate token processing');
+      // Clear cache and immediately check for tokens
+      invalidateTokenCache();
+      // Force immediate processing by resetting lastProcessCheck
+      lastProcessCheck = 0;
+      checkMatchingTokens();
+    } else {
+      console.log('⏸️ Extension disabled');
+    }
+  }
+});
+
+// Listen for manual activation messages from popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'activateTokenProcessing') {
+    const currentChain = detectChain();
+    if (currentChain) {
+      console.log('✅ Manual activation triggered - starting immediate token processing');
+      // Clear cache and immediately check for tokens
+      invalidateTokenCache();
+      // Force immediate processing by resetting lastProcessCheck
+      lastProcessCheck = 0;
+      checkMatchingTokens();
+      sendResponse({ success: true });
+    } else {
+      console.log('⏭️ No supported chain detected, skipping activation');
+      sendResponse({ success: false, reason: 'no_chain' });
+    }
+    return true; // Keep message channel open for async response
+  }
+});
+
