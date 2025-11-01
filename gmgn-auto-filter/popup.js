@@ -24,19 +24,23 @@ document.addEventListener('DOMContentLoaded', () => {
 // Setup filter checkbox handlers
 function setupFilterCheckboxes() {
   const filterMappings = [
-    { checkboxId: 'filterOneMinEnabled', inputId: 'filterOneMinThreshold', rowId: 'filterRowOneMin' },
-    { checkboxId: 'filterFiveMinEnabled', inputId: 'filterFiveMinThreshold', rowId: 'filterRowFiveMin' },
-    { checkboxId: 'filterOneHourEnabled', inputId: 'filterOneHourThreshold', rowId: 'filterRowOneHour' }
+    { checkboxId: 'filterOneMinEnabled', inputIds: ['filterOneMinThresholdLess', 'filterOneMinThresholdGreater'], rowId: 'filterRowOneMin' },
+    { checkboxId: 'filterFiveMinEnabled', inputIds: ['filterFiveMinThresholdLess', 'filterFiveMinThresholdGreater'], rowId: 'filterRowFiveMin' },
+    { checkboxId: 'filterOneHourEnabled', inputIds: ['filterOneHourThresholdLess', 'filterOneHourThresholdGreater'], rowId: 'filterRowOneHour' }
   ];
 
-  filterMappings.forEach(({ checkboxId, inputId, rowId }) => {
+  filterMappings.forEach(({ checkboxId, inputIds, rowId }) => {
     const checkbox = document.getElementById(checkboxId);
-    const input = document.getElementById(inputId);
     const row = document.getElementById(rowId);
 
-    if (checkbox && input && row) {
+    if (checkbox && row) {
       checkbox.addEventListener('change', (e) => {
-        input.disabled = !e.target.checked;
+        inputIds.forEach(inputId => {
+          const input = document.getElementById(inputId);
+          if (input) {
+            input.disabled = !e.target.checked;
+          }
+        });
         if (e.target.checked) {
           row.classList.remove('disabled');
         } else {
@@ -61,34 +65,43 @@ function loadSettings() {
 
       // 1m% filter
       const oneMinEnabled = document.getElementById('filterOneMinEnabled');
-      const oneMinThreshold = document.getElementById('filterOneMinThreshold');
+      const oneMinThresholdLess = document.getElementById('filterOneMinThresholdLess');
+      const oneMinThresholdGreater = document.getElementById('filterOneMinThresholdGreater');
       const oneMinRow = document.getElementById('filterRowOneMin');
-      if (oneMinEnabled && oneMinThreshold && oneMinRow) {
+      if (oneMinEnabled && oneMinThresholdLess && oneMinThresholdGreater && oneMinRow) {
         oneMinEnabled.checked = config.oneMin.enabled;
-        oneMinThreshold.value = config.oneMin.threshold;
-        oneMinThreshold.disabled = !config.oneMin.enabled;
+        oneMinThresholdLess.value = config.oneMin.thresholdLess || '';
+        oneMinThresholdGreater.value = config.oneMin.thresholdGreater || '';
+        oneMinThresholdLess.disabled = !config.oneMin.enabled;
+        oneMinThresholdGreater.disabled = !config.oneMin.enabled;
         oneMinRow.classList.toggle('disabled', !config.oneMin.enabled);
       }
 
       // 5m% filter
       const fiveMinEnabled = document.getElementById('filterFiveMinEnabled');
-      const fiveMinThreshold = document.getElementById('filterFiveMinThreshold');
+      const fiveMinThresholdLess = document.getElementById('filterFiveMinThresholdLess');
+      const fiveMinThresholdGreater = document.getElementById('filterFiveMinThresholdGreater');
       const fiveMinRow = document.getElementById('filterRowFiveMin');
-      if (fiveMinEnabled && fiveMinThreshold && fiveMinRow) {
+      if (fiveMinEnabled && fiveMinThresholdLess && fiveMinThresholdGreater && fiveMinRow) {
         fiveMinEnabled.checked = config.fiveMin.enabled;
-        fiveMinThreshold.value = config.fiveMin.threshold;
-        fiveMinThreshold.disabled = !config.fiveMin.enabled;
+        fiveMinThresholdLess.value = config.fiveMin.thresholdLess || '';
+        fiveMinThresholdGreater.value = config.fiveMin.thresholdGreater || '';
+        fiveMinThresholdLess.disabled = !config.fiveMin.enabled;
+        fiveMinThresholdGreater.disabled = !config.fiveMin.enabled;
         fiveMinRow.classList.toggle('disabled', !config.fiveMin.enabled);
       }
 
       // 1h% filter
       const oneHourEnabled = document.getElementById('filterOneHourEnabled');
-      const oneHourThreshold = document.getElementById('filterOneHourThreshold');
+      const oneHourThresholdLess = document.getElementById('filterOneHourThresholdLess');
+      const oneHourThresholdGreater = document.getElementById('filterOneHourThresholdGreater');
       const oneHourRow = document.getElementById('filterRowOneHour');
-      if (oneHourEnabled && oneHourThreshold && oneHourRow) {
+      if (oneHourEnabled && oneHourThresholdLess && oneHourThresholdGreater && oneHourRow) {
         oneHourEnabled.checked = config.oneHour.enabled;
-        oneHourThreshold.value = config.oneHour.threshold;
-        oneHourThreshold.disabled = !config.oneHour.enabled;
+        oneHourThresholdLess.value = config.oneHour.thresholdLess || '';
+        oneHourThresholdGreater.value = config.oneHour.thresholdGreater || '';
+        oneHourThresholdLess.disabled = !config.oneHour.enabled;
+        oneHourThresholdGreater.disabled = !config.oneHour.enabled;
         oneHourRow.classList.toggle('disabled', !config.oneHour.enabled);
       }
     }
@@ -120,26 +133,53 @@ function saveSettings(e) {
   const filterConfig = {
     oneMin: {
       enabled: document.getElementById('filterOneMinEnabled').checked,
-      threshold: parseFloat(document.getElementById('filterOneMinThreshold').value) || 0
+      thresholdLess: document.getElementById('filterOneMinThresholdLess').value ? parseFloat(document.getElementById('filterOneMinThresholdLess').value) : null,
+      thresholdGreater: document.getElementById('filterOneMinThresholdGreater').value ? parseFloat(document.getElementById('filterOneMinThresholdGreater').value) : null
     },
     fiveMin: {
       enabled: document.getElementById('filterFiveMinEnabled').checked,
-      threshold: parseFloat(document.getElementById('filterFiveMinThreshold').value) || 0
+      thresholdLess: document.getElementById('filterFiveMinThresholdLess').value ? parseFloat(document.getElementById('filterFiveMinThresholdLess').value) : null,
+      thresholdGreater: document.getElementById('filterFiveMinThresholdGreater').value ? parseFloat(document.getElementById('filterFiveMinThresholdGreater').value) : null
     },
     oneHour: {
       enabled: document.getElementById('filterOneHourEnabled').checked,
-      threshold: parseFloat(document.getElementById('filterOneHourThreshold').value) || 0
+      thresholdLess: document.getElementById('filterOneHourThresholdLess').value ? parseFloat(document.getElementById('filterOneHourThresholdLess').value) : null,
+      thresholdGreater: document.getElementById('filterOneHourThresholdGreater').value ? parseFloat(document.getElementById('filterOneHourThresholdGreater').value) : null
     }
   };
 
   // Validate filter thresholds
   const hasEnabledFilter = filterConfig.oneMin.enabled || filterConfig.fiveMin.enabled || filterConfig.oneHour.enabled;
   if (hasEnabledFilter) {
-    // Check if all enabled filters have valid thresholds
-    if ((filterConfig.oneMin.enabled && isNaN(filterConfig.oneMin.threshold)) ||
-        (filterConfig.fiveMin.enabled && isNaN(filterConfig.fiveMin.threshold)) ||
-        (filterConfig.oneHour.enabled && isNaN(filterConfig.oneHour.threshold))) {
-      showStatus('Please enter valid threshold values for enabled filters', 'error');
+    // Check if all enabled filters have at least one threshold and they are valid
+    const oneMinInvalid = filterConfig.oneMin.enabled &&
+                          filterConfig.oneMin.thresholdLess === null &&
+                          filterConfig.oneMin.thresholdGreater === null;
+    const fiveMinInvalid = filterConfig.fiveMin.enabled &&
+                          filterConfig.fiveMin.thresholdLess === null &&
+                          filterConfig.fiveMin.thresholdGreater === null;
+    const oneHourInvalid = filterConfig.oneHour.enabled &&
+                          filterConfig.oneHour.thresholdLess === null &&
+                          filterConfig.oneHour.thresholdGreater === null;
+
+    if (oneMinInvalid || fiveMinInvalid || oneHourInvalid) {
+      showStatus('Please enter at least one threshold value for enabled filters', 'error');
+      return;
+    }
+
+    // Validate that values are valid numbers if provided
+    const oneMinHasNaN = filterConfig.oneMin.enabled &&
+                        ((filterConfig.oneMin.thresholdLess !== null && isNaN(filterConfig.oneMin.thresholdLess)) ||
+                         (filterConfig.oneMin.thresholdGreater !== null && isNaN(filterConfig.oneMin.thresholdGreater)));
+    const fiveMinHasNaN = filterConfig.fiveMin.enabled &&
+                         ((filterConfig.fiveMin.thresholdLess !== null && isNaN(filterConfig.fiveMin.thresholdLess)) ||
+                          (filterConfig.fiveMin.thresholdGreater !== null && isNaN(filterConfig.fiveMin.thresholdGreater)));
+    const oneHourHasNaN = filterConfig.oneHour.enabled &&
+                         ((filterConfig.oneHour.thresholdLess !== null && isNaN(filterConfig.oneHour.thresholdLess)) ||
+                          (filterConfig.oneHour.thresholdGreater !== null && isNaN(filterConfig.oneHour.thresholdGreater)));
+
+    if (oneMinHasNaN || fiveMinHasNaN || oneHourHasNaN) {
+      showStatus('Please enter valid numeric values for thresholds', 'error');
       return;
     }
   }
@@ -160,25 +200,33 @@ function resetSettings() {
 
     // Reset filter configuration
     const defaultConfig = {
-      oneMin: { enabled: false, threshold: 0 },
-      fiveMin: { enabled: false, threshold: 0 },
-      oneHour: { enabled: false, threshold: 0 }
+      oneMin: { enabled: false, thresholdLess: null, thresholdGreater: null },
+      fiveMin: { enabled: false, thresholdLess: null, thresholdGreater: null },
+      oneHour: { enabled: false, thresholdLess: null, thresholdGreater: null }
     };
 
-    // Reset UI
+    // Reset UI - 1m%
     document.getElementById('filterOneMinEnabled').checked = false;
-    document.getElementById('filterOneMinThreshold').value = '';
-    document.getElementById('filterOneMinThreshold').disabled = true;
+    document.getElementById('filterOneMinThresholdLess').value = '';
+    document.getElementById('filterOneMinThresholdGreater').value = '';
+    document.getElementById('filterOneMinThresholdLess').disabled = true;
+    document.getElementById('filterOneMinThresholdGreater').disabled = true;
     document.getElementById('filterRowOneMin').classList.add('disabled');
 
+    // Reset UI - 5m%
     document.getElementById('filterFiveMinEnabled').checked = false;
-    document.getElementById('filterFiveMinThreshold').value = '';
-    document.getElementById('filterFiveMinThreshold').disabled = true;
+    document.getElementById('filterFiveMinThresholdLess').value = '';
+    document.getElementById('filterFiveMinThresholdGreater').value = '';
+    document.getElementById('filterFiveMinThresholdLess').disabled = true;
+    document.getElementById('filterFiveMinThresholdGreater').disabled = true;
     document.getElementById('filterRowFiveMin').classList.add('disabled');
 
+    // Reset UI - 1h%
     document.getElementById('filterOneHourEnabled').checked = false;
-    document.getElementById('filterOneHourThreshold').value = '';
-    document.getElementById('filterOneHourThreshold').disabled = true;
+    document.getElementById('filterOneHourThresholdLess').value = '';
+    document.getElementById('filterOneHourThresholdGreater').value = '';
+    document.getElementById('filterOneHourThresholdLess').disabled = true;
+    document.getElementById('filterOneHourThresholdGreater').disabled = true;
     document.getElementById('filterRowOneHour').classList.add('disabled');
 
     chrome.storage.local.set({

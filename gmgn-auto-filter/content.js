@@ -40,7 +40,7 @@ const SUPPORTED_CHAINS = ['sol', 'bsc', 'eth', 'base', 'arb', 'polygon', 'avax',
 // Detect current chain from URL
 function detectChain() {
   const url = location.href;
-  // Check for chain in URL: https://gmgn.ai/trend?chain=sol or https://gmgn.ai/sol/token/...
+  // Check for chain in URL: https://gmgn.ai/trend/0cvNAY8R?chain=sol or https://gmgn.ai/sol/token/...
   for (const chain of SUPPORTED_CHAINS) {
     if (url.includes(`/trend?chain=${chain}`) || url.includes(`/${chain}/token/`)) {
       return chain;
@@ -88,9 +88,9 @@ const PROCESSED_TOKEN_TIMEOUT = 60000; // Remember processed tokens for 60 secon
 
 // Filter configuration (loaded from storage)
 let filterConfig = {
-  oneMin: { enabled: false, threshold: 0 },
-  fiveMin: { enabled: false, threshold: 0 },
-  oneHour: { enabled: false, threshold: 0 }
+  oneMin: { enabled: false, thresholdLess: null, thresholdGreater: null },
+  fiveMin: { enabled: false, thresholdLess: null, thresholdGreater: null },
+  oneHour: { enabled: false, thresholdLess: null, thresholdGreater: null }
 };
 
 // Load filter configuration from storage
@@ -148,48 +148,151 @@ function tokenMatchesFilters(tokenRow) {
     return false;
   }
 
-  // Try to find price change values in this row
-  const cells = tokenRow.querySelectorAll('div > div > span');
+  // Find values using nth-child selectors directly on cells
+  // GMGN uses div:nth-child(12) for 1m%, div:nth-child(13) for 5m%, div:nth-child(14) for 1h%
 
-  // The structure should be: [token info..., 1m%, 5m%, 1h%, ...]
-  // We need to find these values in the row
-  let cellIndex = 0;
+  let oneMinValue = null;
+  let fiveMinValue = null;
+  let oneHourValue = null;
 
-  for (const cell of cells) {
-    const text = cell.textContent.trim();
-
-    // Check if this cell contains a percentage value
-    if (text.includes('%')) {
-      const value = parseFloat(text.replace('%', ''));
-
-      if (!isNaN(value)) {
-        // Try to identify which column this is based on position
-        // This is approximate - we'll need to test with actual GMGN structure
-        if (cellIndex === 11 && filterConfig.oneMin.enabled) {
-          // 1m% column
-          if (value < filterConfig.oneMin.threshold) {
-            return false;
-          }
-        } else if (cellIndex === 12 && filterConfig.fiveMin.enabled) {
-          // 5m% column
-          if (value < filterConfig.fiveMin.threshold) {
-            return false;
-          }
-        } else if (cellIndex === 13 && filterConfig.oneHour.enabled) {
-          // 1h% column
-          if (value < filterConfig.oneHour.threshold) {
-            return false;
+  // Extract 1m% value from nth-child(12)
+  if (filterConfig.oneMin.enabled) {
+    try {
+      const cell = tokenRow.querySelector('div:nth-child(12)');
+      if (cell) {
+        const span = cell.querySelector('div > span');
+        if (span) {
+          const text = span.textContent.trim();
+          if (text.includes('%')) {
+            const value = parseFloat(text.replace('%', ''));
+            if (!isNaN(value)) {
+              oneMinValue = value;
+              console.log(`🔍 Found 1m% value: ${value} from div:nth-child(12)`);
+            }
           }
         }
-
-        cellIndex++;
       }
-    } else {
-      cellIndex++;
+    } catch (e) {
+      console.log('Error extracting 1m%:', e);
+    }
+  }
+
+  // Extract 5m% value from nth-child(13)
+  if (filterConfig.fiveMin.enabled) {
+    try {
+      const cell = tokenRow.querySelector('div:nth-child(13)');
+      if (cell) {
+        const span = cell.querySelector('div > span');
+        if (span) {
+          const text = span.textContent.trim();
+          if (text.includes('%')) {
+            const value = parseFloat(text.replace('%', ''));
+            if (!isNaN(value)) {
+              fiveMinValue = value;
+              console.log(`🔍 Found 5m% value: ${value} from div:nth-child(13)`);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.log('Error extracting 5m%:', e);
+    }
+  }
+
+  // Extract 1h% value from nth-child(14)
+  if (filterConfig.oneHour.enabled) {
+    try {
+      const cell = tokenRow.querySelector('div:nth-child(14)');
+      if (cell) {
+        const span = cell.querySelector('div > span');
+        if (span) {
+          const text = span.textContent.trim();
+          if (text.includes('%')) {
+            const value = parseFloat(text.replace('%', ''));
+            if (!isNaN(value)) {
+              oneHourValue = value;
+              console.log(`🔍 Found 1h% value: ${value} from div:nth-child(14)`);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.log('Error extracting 1h%:', e);
+    }
+  }
+
+  // Check each enabled filter
+  if (filterConfig.oneMin.enabled) {
+    if (oneMinValue === null) {
+      console.log('⚠️ 1m% filter enabled but value not found');
+      return false; // If we can't find the value, don't match
+    }
+    const matches = checkThresholdMatch(oneMinValue, filterConfig.oneMin);
+    console.log(`🔍 1m% filter: value=${oneMinValue}, less=${filterConfig.oneMin.thresholdLess}, greater=${filterConfig.oneMin.thresholdGreater}, matches=${matches}`);
+    if (!matches) {
+      return false;
+    }
+  }
+
+  if (filterConfig.fiveMin.enabled) {
+    if (fiveMinValue === null) {
+      console.log('⚠️ 5m% filter enabled but value not found');
+      return false; // If we can't find the value, don't match
+    }
+    const matches = checkThresholdMatch(fiveMinValue, filterConfig.fiveMin);
+    console.log(`🔍 5m% filter: value=${fiveMinValue}, less=${filterConfig.fiveMin.thresholdLess}, greater=${filterConfig.fiveMin.thresholdGreater}, matches=${matches}`);
+    if (!matches) {
+      return false;
+    }
+  }
+
+  if (filterConfig.oneHour.enabled) {
+    if (oneHourValue === null) {
+      console.log('⚠️ 1h% filter enabled but value not found');
+      return false; // If we can't find the value, don't match
+    }
+    const matches = checkThresholdMatch(oneHourValue, filterConfig.oneHour);
+    console.log(`🔍 1h% filter: value=${oneHourValue}, less=${filterConfig.oneHour.thresholdLess}, greater=${filterConfig.oneHour.thresholdGreater}, matches=${matches}`);
+    if (!matches) {
+      return false;
     }
   }
 
   return true; // All enabled filters passed
+}
+
+// Helper function to check if a value matches the threshold criteria
+// Returns true if: value < thresholdLess OR value > thresholdGreater
+// Both thresholds are optional (can be null)
+function checkThresholdMatch(value, filterConfig) {
+  const { thresholdLess, thresholdGreater } = filterConfig;
+
+  console.log(`  [checkThresholdMatch] value=${value}, thresholdLess=${thresholdLess}, thresholdGreater=${thresholdGreater}`);
+
+  // If both thresholds are null, no match (shouldn't happen if validation is working)
+  if (thresholdLess === null && thresholdGreater === null) {
+    console.log(`  [checkThresholdMatch] Both thresholds null, returning false`);
+    return false;
+  }
+
+  // Check if value matches at least one of the criteria
+  let matchesLess = false;
+  let matchesGreater = false;
+
+  if (thresholdLess !== null && value < thresholdLess) {
+    matchesLess = true;
+    console.log(`  [checkThresholdMatch] ✓ matches less: ${value} < ${thresholdLess}`);
+  }
+
+  if (thresholdGreater !== null && value > thresholdGreater) {
+    matchesGreater = true;
+    console.log(`  [checkThresholdMatch] ✓ matches greater: ${value} > ${thresholdGreater}`);
+  }
+
+  // Match if either condition is true
+  const result = matchesLess || matchesGreater;
+  console.log(`  [checkThresholdMatch] Final result: ${result} (matchesLess: ${matchesLess}, matchesGreater: ${matchesGreater})`);
+  return result;
 }
 
 // Highlight a token row
@@ -411,6 +514,8 @@ function findTokenData(chain, forceRefresh = false) {
 // Countdown timer functionality
 let openedTokensData = new Map(); // tokenId -> {timestamp, cooldownMs}
 let countdownInterval = null;
+let fetchInterval = null;
+let tokenCheckInterval = null;
 
 // Fetch opened tokens data from background
 function fetchOpenedTokens() {
@@ -466,6 +571,323 @@ function isTokenInCooldown(tokenId) {
   return false;
 }
 
+// Track timers being created to prevent race conditions
+const timersBeingCreated = new Set();
+
+// Add countdown timer to a token row
+function addCountdownTimer(link, tokenId) {
+  // Only show countdown timers on listing pages
+  if (!isListingPage()) {
+    return;
+  }
+
+  // Validate link
+  if (!link || !link.href) {
+    return;
+  }
+
+  // CRITICAL FIX: First check GLOBALLY for existing timer for this token
+  let existingTimer = document.querySelector(`.gmgn-token-timer[data-token-id="${tokenId}"]`);
+
+  // If found globally, update it and clean up any duplicates
+  if (existingTimer) {
+    // Clean up ALL duplicate timers for this token
+    const allTimersForToken = document.querySelectorAll(`.gmgn-token-timer[data-token-id="${tokenId}"]`);
+    if (allTimersForToken.length > 1) {
+      console.log('🧹 Cleaning up', allTimersForToken.length - 1, 'duplicate timers for token:', tokenId);
+      for (let i = 1; i < allTimersForToken.length; i++) {
+        allTimersForToken[i].remove();
+      }
+    }
+
+    // Update the timer
+    const timer = existingTimer;
+
+    // Get the timestamp when token was opened and cooldown duration
+    const tokenData = openedTokensData.get(tokenId);
+    const cooldownDuration = getCooldownDuration(tokenId);
+
+    let countdownSeconds = 0;
+    let elapsed = 0;
+    let isInCooldown = false;
+
+    if (tokenData && tokenData.timestamp) {
+      const openedTime = tokenData.timestamp;
+      const now = Date.now();
+      elapsed = Math.floor((now - openedTime) / 1000);
+
+      if (elapsed < cooldownDuration) {
+        isInCooldown = true;
+        countdownSeconds = cooldownDuration - elapsed;
+      } else {
+        isInCooldown = false;
+        countdownSeconds = 0;
+      }
+    }
+
+    // Only show timer if token is in cooldown
+    if (isInCooldown) {
+      timer.textContent = formatTime(countdownSeconds);
+    } else {
+      timer.remove();
+      return;
+    }
+
+    // Update title with time since last action
+    if (tokenData && tokenData.timestamp) {
+      if (isInCooldown) {
+        const remainingMins = Math.floor(countdownSeconds / 60);
+        const totalMins = Math.floor(cooldownDuration / 60);
+        timer.title = `Opened ${formatTime(elapsed)} ago • ${remainingMins}/${totalMins} min cooldown`;
+      } else {
+        timer.title = `Cooldown complete (opened ${formatTime(elapsed)} ago)`;
+      }
+    } else {
+      const totalMins = Math.floor(cooldownDuration / 60);
+      timer.title = `Not opened yet • Will have ${totalMins}-min cooldown`;
+    }
+
+    // Change color based on cooldown status
+    if (!isInCooldown) {
+      timer.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+      timer.style.opacity = '1';
+    } else {
+      const cooldownProgress = countdownSeconds / cooldownDuration;
+      if (cooldownProgress > 0.75) {
+        timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
+        timer.style.opacity = '1';
+      } else if (cooldownProgress > 0.5) {
+        timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
+        timer.style.opacity = '1';
+      } else if (cooldownProgress > 0.25) {
+        timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+        timer.style.opacity = '1';
+      } else {
+        timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
+        timer.style.opacity = '0.9';
+      }
+    }
+
+    return;
+  }
+
+  // Prevent race condition
+  if (timersBeingCreated.has(tokenId)) {
+    return;
+  }
+
+  // Mark that we're creating a timer for this token
+  timersBeingCreated.add(tokenId);
+
+  // Find the token name container using the provided CSS selector pattern
+  // Target: div.css-1vlwulx (the last div in the selector path)
+  let container = null;
+
+  try {
+    // Try to find the parent link/row first
+    const linkParent = link.parentElement;
+
+    // Navigate up to find the token name container
+    // The structure is: a > div.css-fen2w7 > div.css-1ar5kb0 > div > div.css-12zlagp > div.css-1vlwulx
+    let currentElement = link;
+    for (let i = 0; i < 5; i++) {
+      if (!currentElement) break;
+      currentElement = currentElement.parentElement;
+      if (currentElement && currentElement.classList.contains('css-1vlwulx')) {
+        container = currentElement;
+        break;
+      }
+    }
+
+    // Fallback: search within the link's ancestors
+    if (!container) {
+      container = link.closest('.css-1vlwulx');
+    }
+
+    // Fallback: find any div with css-1vlwulx in the row
+    if (!container) {
+      const row = link.closest('[class*="row"], tr');
+      if (row) {
+        container = row.querySelector('.css-1vlwulx');
+      }
+    }
+
+    // Fallback: just use the link's parent
+    if (!container) {
+      container = linkParent;
+    }
+  } catch (e) {
+    console.log('⚠️ Could not find container:', e);
+  }
+
+  if (!container) {
+    timersBeingCreated.delete(tokenId);
+    return;
+  }
+
+  // Double-check after getting container
+  const recheckTimer = document.querySelector(`.gmgn-token-timer[data-token-id="${tokenId}"]`);
+  if (recheckTimer) {
+    timersBeingCreated.delete(tokenId);
+    addCountdownTimer(link, tokenId); // Recursively call to update
+    return;
+  }
+
+  // No timer exists - create a new one
+  const orphanedTimers = container.querySelectorAll('.gmgn-token-timer:not([data-token-id])');
+  orphanedTimers.forEach(timer => timer.remove());
+
+  // Create new timer element
+  const timer = document.createElement('div');
+  timer.className = 'gmgn-token-timer';
+  timer.setAttribute('data-token-id', tokenId);
+  timer.style.cssText = `
+    display: inline-block !important;
+    padding: 3px 8px;
+    background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+    color: white !important;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    margin-left: 8px;
+    white-space: nowrap;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    letter-spacing: 0.5px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    z-index: 9999;
+    position: relative;
+    vertical-align: middle;
+    line-height: 1.2;
+    flex-shrink: 0;
+  `;
+
+  // Try to insert after the last text element in container
+  let inserted = false;
+
+  try {
+    // Try to insert after the last child
+    if (container.lastChild) {
+      container.insertBefore(timer, container.lastChild.nextSibling);
+    } else {
+      container.appendChild(timer);
+    }
+    inserted = true;
+  } catch (e) {
+    console.log('❌ Failed to insert timer:', e);
+  }
+
+  // Fallback: append to container
+  if (!inserted) {
+    try {
+      container.appendChild(timer);
+      inserted = true;
+    } catch (e) {
+      console.log('❌ Fallback insert failed:', e);
+    }
+  }
+
+  if (!inserted) {
+    timersBeingCreated.delete(tokenId);
+    return;
+  }
+
+  // Initial update
+  const tokenData = openedTokensData.get(tokenId);
+  const cooldownDuration = getCooldownDuration(tokenId);
+
+  let countdownSeconds = 0;
+  let elapsed = 0;
+  let isInCooldown = false;
+
+  if (tokenData && tokenData.timestamp) {
+    const openedTime = tokenData.timestamp;
+    const now = Date.now();
+    elapsed = Math.floor((now - openedTime) / 1000);
+
+    if (elapsed < cooldownDuration) {
+      isInCooldown = true;
+      countdownSeconds = cooldownDuration - elapsed;
+    } else {
+      isInCooldown = false;
+      countdownSeconds = 0;
+    }
+  }
+
+  // Only show timer if token is in cooldown
+  if (isInCooldown) {
+    timer.textContent = formatTime(countdownSeconds);
+  } else {
+    timer.remove();
+    timersBeingCreated.delete(tokenId);
+    return;
+  }
+
+  // Update title
+  if (tokenData && tokenData.timestamp) {
+    if (isInCooldown) {
+      const remainingMins = Math.floor(countdownSeconds / 60);
+      const totalMins = Math.floor(cooldownDuration / 60);
+      timer.title = `Opened ${formatTime(elapsed)} ago • ${remainingMins}/${totalMins} min cooldown`;
+    } else {
+      timer.title = `Cooldown complete (opened ${formatTime(elapsed)} ago)`;
+    }
+  } else {
+    const totalMins = Math.floor(cooldownDuration / 60);
+    timer.title = `Not opened yet • Will have ${totalMins}-min cooldown`;
+  }
+
+  // Set color based on cooldown status
+  if (!isInCooldown) {
+    timer.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+    timer.style.opacity = '1';
+  } else {
+    const cooldownProgress = countdownSeconds / cooldownDuration;
+    if (cooldownProgress > 0.75) {
+      timer.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
+      timer.style.opacity = '1';
+    } else if (cooldownProgress > 0.5) {
+      timer.style.background = 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)';
+      timer.style.opacity = '1';
+    } else if (cooldownProgress > 0.25) {
+      timer.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+      timer.style.opacity = '1';
+    } else {
+      timer.style.background = 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)';
+      timer.style.opacity = '0.9';
+    }
+  }
+
+  timersBeingCreated.delete(tokenId);
+}
+
+// Clean up duplicate timers periodically
+function cleanupDuplicateTimers() {
+  const allTimers = document.querySelectorAll('.gmgn-token-timer[data-token-id]');
+  const timerMap = new Map();
+
+  allTimers.forEach(timer => {
+    const tokenId = timer.getAttribute('data-token-id');
+    if (!timerMap.has(tokenId)) {
+      timerMap.set(tokenId, [timer]);
+    } else {
+      timerMap.get(tokenId).push(timer);
+    }
+  });
+
+  // Remove duplicate timers, keeping only the first one for each token
+  timerMap.forEach(timers => {
+    if (timers.length > 1) {
+      for (let i = 1; i < timers.length; i++) {
+        timers[i].remove();
+      }
+    }
+  });
+
+  // Also clean up any timers without data-token-id
+  const orphanedTimers = document.querySelectorAll('.gmgn-token-timer:not([data-token-id])');
+  orphanedTimers.forEach(timer => timer.remove());
+}
+
 // Update countdown displays for all token rows
 function updateCountdownDisplays() {
   if (isUpdatingDOM) return;
@@ -478,17 +900,23 @@ function updateCountdownDisplays() {
       return;
     }
 
-    // Find all token links
+    // Clean up any duplicate timers first
+    cleanupDuplicateTimers();
+
+    // Find all token links - force refresh to get latest
     const tokenData = findTokenData(currentChain, true);
 
     if (tokenData.length === 0) {
       return;
     }
 
-    tokenData.forEach(({ tokenId }) => {
+    tokenData.forEach(({ tokenId, link }) => {
       if (isTokenInCooldown(tokenId)) {
-        // Add countdown timer to row if needed
-        // (Implementation similar to DexScreener, simplified for GMGN)
+        try {
+          addCountdownTimer(link, tokenId);
+        } catch (error) {
+          console.error('❌ Error in addCountdownTimer:', error);
+        }
       }
     });
   } finally {
@@ -509,9 +937,15 @@ function startCountdownUpdates() {
   }, 1000);
 
   fetchOpenedTokens(); // Initial fetch
-  setInterval(() => {
+  fetchInterval = setInterval(() => {
     fetchOpenedTokens();
   }, 30000); // Fetch every 30 seconds
+
+  // Start periodic token check for GMGN price updates
+  // Check every 3 seconds to catch real-time price changes
+  tokenCheckInterval = setInterval(() => {
+    checkMatchingTokens();
+  }, 3000); // Check every 3 seconds
 }
 
 // Initialize
@@ -559,6 +993,12 @@ function init() {
 window.addEventListener('beforeunload', () => {
   if (countdownInterval) {
     clearInterval(countdownInterval);
+  }
+  if (fetchInterval) {
+    clearInterval(fetchInterval);
+  }
+  if (tokenCheckInterval) {
+    clearInterval(tokenCheckInterval);
   }
   cachedTokenLinks = null;
 });

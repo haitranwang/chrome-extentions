@@ -781,6 +781,9 @@ if (openedFilterUrls.size > 50) {
 **5. Chain Detection:**
 - **DexScreener:** `/{chain}/` in URL
 - **GMGN:** `?chain={chain}` or `/{chain}/` in URL
+- **GMGN URL Examples:**
+  - Trend page: `https://gmgn.ai/trend/0cvNAY8R?chain=sol`
+  - Token page: `https://gmgn.ai/sol/token/TOKENID`
 
 **6. Required Changes for GMGN:**
 
