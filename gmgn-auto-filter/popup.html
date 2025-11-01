@@ -23,30 +23,30 @@
     .header {
       background: linear-gradient(135deg, #252525 0%, #2a2a2a 100%);
       color: #e5e5e5;
-      padding: 16px;
+      padding: 12px;
       text-align: center;
       border-bottom: 1px solid #3a3a3a;
     }
 
     .header h2 {
-      font-size: 16px;
-      margin-bottom: 4px;
+      font-size: 15px;
+      margin-bottom: 3px;
       font-weight: 600;
       -webkit-font-smoothing: antialiased;
     }
 
     .header p {
-      font-size: 11px;
+      font-size: 10px;
       color: #d4d4d4;
       font-weight: 400;
     }
 
     .content {
-      padding: 16px;
+      padding: 12px;
     }
 
     .form-group {
-      margin-bottom: 20px;
+      margin-bottom: 12px;
     }
 
     label {
@@ -66,10 +66,10 @@
 
     input[type="number"] {
       width: 100%;
-      padding: 10px;
+      padding: 6px 8px;
       border: 2px solid #3a3a3a;
       border-radius: 6px;
-      font-size: 14px;
+      font-size: 12px;
       background: #252525;
       color: #e5e5e5;
       transition: all 0.3s ease;
@@ -85,15 +85,15 @@
     .button-group {
       display: flex;
       gap: 8px;
-      margin-top: 20px;
+      margin-top: 12px;
     }
 
     button {
       flex: 1;
-      padding: 10px 16px;
+      padding: 8px 12px;
       border: none;
       border-radius: 6px;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.3s ease;
@@ -152,12 +152,12 @@
     }
 
     .stats {
-      margin-top: 16px;
-      padding: 12px;
+      margin-top: 12px;
+      padding: 10px;
       background: #252525;
       border: 1px solid #3a3a3a;
       border-radius: 6px;
-      font-size: 12px;
+      font-size: 11px;
     }
 
     .stats-item {
@@ -185,6 +185,8 @@
       display: inline-block;
       width: 50px;
       height: 26px;
+      margin: 0;
+      vertical-align: middle;
     }
 
     .switch input {
@@ -233,12 +235,12 @@
     .filter-row {
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 12px;
+      gap: 10px;
+      padding: 10px;
       background: #252525;
       border: 1px solid #3a3a3a;
-      border-radius: 8px;
-      margin-bottom: 12px;
+      border-radius: 6px;
+      margin-bottom: 8px;
       transition: all 0.2s;
     }
 
@@ -251,14 +253,25 @@
     }
 
     .filter-label {
-      flex: 0 0 60px;
+      flex: 0 0 45px;
       font-weight: 600;
-      font-size: 13px;
+      font-size: 12px;
       color: #4ade80;
+      display: flex;
+      align-items: center;
+      line-height: 1;
     }
 
     .filter-checkbox {
       flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 26px;
+    }
+
+    .filter-checkbox .switch {
+      margin: 0;
     }
 
     .filter-input-group {
@@ -266,6 +279,7 @@
       display: flex;
       align-items: center;
       gap: 8px;
+      min-width: 0;
     }
 
     .filter-input {
@@ -280,37 +294,42 @@
 
     .filter-input-wrapper {
       display: flex;
-      align-items: center;
-      gap: 6px;
+      align-items: flex-end;
+      gap: 8px;
       flex: 1;
-    }
-
-    .filter-input-comparison {
-      font-size: 12px;
-      font-weight: 600;
-      color: #b3b3b3;
-      white-space: nowrap;
-      min-width: 20px;
-      text-align: center;
+      min-width: 0;
     }
 
     .filter-input-label {
-      font-size: 10px;
+      font-size: 9px;
       color: #808080;
       margin-bottom: 2px;
       display: block;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .filter-input-container input:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      background: #1a1a1a;
     }
 
     .filter-input-container {
       flex: 1;
       min-width: 0;
+      display: flex;
+      flex-direction: column;
     }
 
     .filter-suffix {
       flex: 0 0 auto;
       color: #b3b3b3;
-      font-size: 13px;
+      font-size: 11px;
       white-space: nowrap;
+      align-self: flex-end;
+      margin-bottom: 7px;
+      padding-left: 2px;
     }
   </style>
 </head>
@@ -321,11 +340,11 @@
   </div>
 
   <div class="content">
-    <div class="form-group" style="border-bottom: 1px solid #3a3a3a; padding-bottom: 16px; margin-bottom: 20px;">
-      <label style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 12px; background: #252525; border: 1px solid #3a3a3a; border-radius: 8px; margin-bottom: 0;">
+    <div class="form-group" style="border-bottom: 1px solid #3a3a3a; padding-bottom: 10px; margin-bottom: 12px;">
+      <label style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 8px; background: #252525; border: 1px solid #3a3a3a; border-radius: 6px; margin-bottom: 0;">
           <span>
-            <strong>Enable Extension</strong>
-            <span class="label-description">Turn auto-open on/off</span>
+            <strong style="font-size: 13px;">Enable Extension</strong>
+            <span class="label-description" style="font-size: 10px;">Turn auto-open on/off</span>
           </span>
           <label class="switch">
             <input type="checkbox" id="extensionEnabled" checked>
@@ -336,21 +355,21 @@
 
       <form id="settingsForm">
       <div class="form-group">
-        <label for="cooldownMinutes">
+        <label for="cooldownMinutes" style="font-size: 12px;">
           Cooldown Period
-          <span class="label-description">Minutes before opening the same token again</span>
+          <span class="label-description" style="font-size: 10px;">Minutes before opening the same token again</span>
         </label>
         <div style="display: flex; gap: 8px; align-items: center;">
-          <input type="number" id="cooldownMinutes" min="1" max="60" value="15" required style="width: 100%;">
-          <span style="color: #b3b3b3; font-size: 13px; white-space: nowrap;">minutes</span>
+          <input type="number" id="cooldownMinutes" min="1" max="60" value="15" required style="width: 100%; padding: 6px 8px; font-size: 12px;">
+          <span style="color: #b3b3b3; font-size: 11px; white-space: nowrap;">minutes</span>
         </div>
       </div>
 
       <!-- Filter Configuration Section -->
       <div class="form-group">
-        <label style="margin-bottom: 12px;">
-          <strong>Price Change Filters</strong>
-          <span class="label-description">Open tokens with price change less than OR greater than the specified thresholds</span>
+        <label style="margin-bottom: 8px;">
+          <strong style="font-size: 13px;">Price Change Filters</strong>
+          <span class="label-description" style="font-size: 10px;">Less than OR greater than (one at a time)</span>
         </label>
 
         <!-- 1m% Filter Row -->
@@ -368,7 +387,6 @@
                 <span class="filter-input-label">Less than</span>
                 <input type="number" id="filterOneMinThresholdLess" placeholder="0.0" step="0.1" disabled style="width: 100%; margin: 0;">
               </div>
-              <span class="filter-input-comparison">&lt;</span>
               <div class="filter-input-container">
                 <span class="filter-input-label">Greater than</span>
                 <input type="number" id="filterOneMinThresholdGreater" placeholder="0.0" step="0.1" disabled style="width: 100%; margin: 0;">
@@ -393,7 +411,6 @@
                 <span class="filter-input-label">Less than</span>
                 <input type="number" id="filterFiveMinThresholdLess" placeholder="0.0" step="0.1" disabled style="width: 100%; margin: 0;">
               </div>
-              <span class="filter-input-comparison">&lt;</span>
               <div class="filter-input-container">
                 <span class="filter-input-label">Greater than</span>
                 <input type="number" id="filterFiveMinThresholdGreater" placeholder="0.0" step="0.1" disabled style="width: 100%; margin: 0;">
@@ -418,7 +435,6 @@
                 <span class="filter-input-label">Less than</span>
                 <input type="number" id="filterOneHourThresholdLess" placeholder="0.0" step="0.1" disabled style="width: 100%; margin: 0;">
               </div>
-              <span class="filter-input-comparison">&lt;</span>
               <div class="filter-input-container">
                 <span class="filter-input-label">Greater than</span>
                 <input type="number" id="filterOneHourThresholdGreater" placeholder="0.0" step="0.1" disabled style="width: 100%; margin: 0;">

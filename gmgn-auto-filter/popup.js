@@ -18,6 +18,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Filter checkbox change handlers - enable/disable input fields
   setupFilterCheckboxes();
 
+  // Setup mutually exclusive filter input logic
+  setupMutuallyExclusiveFilters();
+
   console.log('All event listeners attached');
 });
 
@@ -35,20 +38,107 @@ function setupFilterCheckboxes() {
 
     if (checkbox && row) {
       checkbox.addEventListener('change', (e) => {
-        inputIds.forEach(inputId => {
-          const input = document.getElementById(inputId);
-          if (input) {
-            input.disabled = !e.target.checked;
-          }
-        });
+        const lessInput = document.getElementById(inputIds[0]);
+        const greaterInput = document.getElementById(inputIds[1]);
+
         if (e.target.checked) {
           row.classList.remove('disabled');
+          // Enable inputs but apply mutual exclusivity
+          lessInput.disabled = false;
+          greaterInput.disabled = false;
+          applyMutualExclusivity(inputIds[0], inputIds[1]);
         } else {
           row.classList.add('disabled');
+          // Disable both inputs but preserve values
+          lessInput.disabled = true;
+          greaterInput.disabled = true;
         }
       });
     }
   });
+}
+
+// Setup mutually exclusive filter inputs
+// When one field has a value, disable the other field
+function setupMutuallyExclusiveFilters() {
+  const filterPairs = [
+    { lessId: 'filterOneMinThresholdLess', greaterId: 'filterOneMinThresholdGreater' },
+    { lessId: 'filterFiveMinThresholdLess', greaterId: 'filterFiveMinThresholdGreater' },
+    { lessId: 'filterOneHourThresholdLess', greaterId: 'filterOneHourThresholdGreater' }
+  ];
+
+  filterPairs.forEach(({ lessId, greaterId }) => {
+    const lessInput = document.getElementById(lessId);
+    const greaterInput = document.getElementById(greaterId);
+
+    if (lessInput && greaterInput) {
+      // When "Less than" field changes
+      lessInput.addEventListener('input', () => {
+        applyMutualExclusivity(lessId, greaterId);
+      });
+
+      // When "Greater than" field changes
+      greaterInput.addEventListener('input', () => {
+        applyMutualExclusivity(lessId, greaterId);
+      });
+
+      // Also check on load
+      applyMutualExclusivity(lessId, greaterId);
+    }
+  });
+}
+
+// Apply mutual exclusivity between two filter inputs
+function applyMutualExclusivity(lessId, greaterId) {
+  const lessInput = document.getElementById(lessId);
+  const greaterInput = document.getElementById(greaterId);
+
+  if (!lessInput || !greaterInput) return;
+
+  // Find the checkbox for this filter row to check if filter is enabled
+  const rowId = lessInput.closest('.filter-row')?.id;
+  if (!rowId) return;
+
+  const checkboxMap = {
+    'filterRowOneMin': 'filterOneMinEnabled',
+    'filterRowFiveMin': 'filterFiveMinEnabled',
+    'filterRowOneHour': 'filterOneHourEnabled'
+  };
+  const checkboxId = checkboxMap[rowId];
+  if (!checkboxId) return;
+
+  const checkbox = document.getElementById(checkboxId);
+  if (!checkbox || !checkbox.checked) {
+    // Filter is disabled, both inputs should be disabled
+    lessInput.disabled = true;
+    greaterInput.disabled = true;
+    return;
+  }
+
+  const lessValue = lessInput.value.trim();
+  const greaterValue = greaterInput.value.trim();
+
+  // If "Less than" has a value, disable and clear "Greater than"
+  if (lessValue !== '') {
+    lessInput.disabled = false;
+    greaterInput.disabled = true;
+    if (greaterValue !== '') {
+      greaterInput.value = ''; // Clear the value
+    }
+  }
+  // If "Greater than" has a value, disable and clear "Less than"
+  else if (greaterValue !== '') {
+    greaterInput.disabled = false;
+    lessInput.disabled = true;
+    if (lessValue !== '') {
+      lessInput.value = ''; // Clear the value
+    }
+  }
+  // If both are empty, enable both
+  else {
+    lessInput.disabled = false;
+    greaterInput.disabled = false;
+  }
 }
 
 // Load saved settings
@@ -72,9 +162,14 @@ function loadSettings() {
         oneMinEnabled.checked = config.oneMin.enabled;
         oneMinThresholdLess.value = config.oneMin.thresholdLess || '';
         oneMinThresholdGreater.value = config.oneMin.thresholdGreater || '';
-        oneMinThresholdLess.disabled = !config.oneMin.enabled;
-        oneMinThresholdGreater.disabled = !config.oneMin.enabled;
         oneMinRow.classList.toggle('disabled', !config.oneMin.enabled);
+        // Apply mutual exclusivity after loading values
+        if (config.oneMin.enabled) {
+          applyMutualExclusivity('filterOneMinThresholdLess', 'filterOneMinThresholdGreater');
+        } else {
+          oneMinThresholdLess.disabled = true;
+          oneMinThresholdGreater.disabled = true;
+        }
       }
 
       // 5m% filter
@@ -86,9 +181,14 @@ function loadSettings() {
         fiveMinEnabled.checked = config.fiveMin.enabled;
         fiveMinThresholdLess.value = config.fiveMin.thresholdLess || '';
         fiveMinThresholdGreater.value = config.fiveMin.thresholdGreater || '';
-        fiveMinThresholdLess.disabled = !config.fiveMin.enabled;
-        fiveMinThresholdGreater.disabled = !config.fiveMin.enabled;
         fiveMinRow.classList.toggle('disabled', !config.fiveMin.enabled);
+        // Apply mutual exclusivity after loading values
+        if (config.fiveMin.enabled) {
+          applyMutualExclusivity('filterFiveMinThresholdLess', 'filterFiveMinThresholdGreater');
+        } else {
+          fiveMinThresholdLess.disabled = true;
+          fiveMinThresholdGreater.disabled = true;
+        }
       }
 
       // 1h% filter
@@ -100,9 +200,14 @@ function loadSettings() {
         oneHourEnabled.checked = config.oneHour.enabled;
         oneHourThresholdLess.value = config.oneHour.thresholdLess || '';
         oneHourThresholdGreater.value = config.oneHour.thresholdGreater || '';
-        oneHourThresholdLess.disabled = !config.oneHour.enabled;
-        oneHourThresholdGreater.disabled = !config.oneHour.enabled;
         oneHourRow.classList.toggle('disabled', !config.oneHour.enabled);
+        // Apply mutual exclusivity after loading values
+        if (config.oneHour.enabled) {
+          applyMutualExclusivity('filterOneHourThresholdLess', 'filterOneHourThresholdGreater');
+        } else {
+          oneHourThresholdLess.disabled = true;
+          oneHourThresholdGreater.disabled = true;
+        }
       }
     }
   });
@@ -151,7 +256,7 @@ function saveSettings(e) {
   // Validate filter thresholds
   const hasEnabledFilter = filterConfig.oneMin.enabled || filterConfig.fiveMin.enabled || filterConfig.oneHour.enabled;
   if (hasEnabledFilter) {
-    // Check if all enabled filters have at least one threshold and they are valid
+    // Check if all enabled filters have exactly one threshold (mutually exclusive)
     const oneMinInvalid = filterConfig.oneMin.enabled &&
                           filterConfig.oneMin.thresholdLess === null &&
                           filterConfig.oneMin.thresholdGreater === null;
@@ -163,7 +268,23 @@ function saveSettings(e) {
                           filterConfig.oneHour.thresholdGreater === null;
 
     if (oneMinInvalid || fiveMinInvalid || oneHourInvalid) {
-      showStatus('Please enter at least one threshold value for enabled filters', 'error');
+      showStatus('Please enter a threshold value for enabled filters', 'error');
+      return;
+    }
+
+    // Check that only one threshold type is set per filter (mutually exclusive)
+    const oneMinBothSet = filterConfig.oneMin.enabled &&
+                          filterConfig.oneMin.thresholdLess !== null &&
+                          filterConfig.oneMin.thresholdGreater !== null;
+    const fiveMinBothSet = filterConfig.fiveMin.enabled &&
+                          filterConfig.fiveMin.thresholdLess !== null &&
+                          filterConfig.fiveMin.thresholdGreater !== null;
+    const oneHourBothSet = filterConfig.oneHour.enabled &&
+                          filterConfig.oneHour.thresholdLess !== null &&
+                          filterConfig.oneHour.thresholdGreater !== null;
+
+    if (oneMinBothSet || fiveMinBothSet || oneHourBothSet) {
+      showStatus('Only one filter type (Less than OR Greater than) can be active at a time', 'error');
       return;
     }
 

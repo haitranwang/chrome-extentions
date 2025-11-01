@@ -40,15 +40,25 @@ const SUPPORTED_CHAINS = ['sol', 'bsc', 'eth', 'base', 'arb', 'polygon', 'avax',
 // Detect current chain from URL
 function detectChain() {
   const url = location.href;
-  // Check for chain in URL: https://gmgn.ai/trend/0cvNAY8R?chain=sol or https://gmgn.ai/sol/token/...
+
+  // First, try to extract chain from query parameter (works for /trade?chain=sol, /trend?chain=sol, /trend/ID?chain=sol)
+  const urlObj = new URL(url);
+  const chainParam = urlObj.searchParams.get('chain');
+  if (chainParam && SUPPORTED_CHAINS.includes(chainParam)) {
+    return chainParam;
+  }
+
+  // Fallback: Check for chain in URL path patterns (for cases where query param extraction failed)
+  // This covers: /trend?chain=sol, /trend/ID?chain=sol, /trade?chain=sol, /chain/token/TOKENID
   for (const chain of SUPPORTED_CHAINS) {
-    if (url.includes(`/trend?chain=${chain}`) || url.includes(`/${chain}/token/`)) {
+    if (url.includes(`?chain=${chain}`) ||
+        url.includes(`/${chain}/token/`)) {
       return chain;
     }
   }
 
-  // Try to extract from URL path
-  const pathMatch = url.match(/gmgn\.ai\/([^\/]+)/);
+  // Try to extract from URL path (e.g., https://gmgn.ai/sol/...)
+  const pathMatch = url.match(/gmgn\.ai\/([^\/\?]+)/);
   if (pathMatch && SUPPORTED_CHAINS.includes(pathMatch[1])) {
     return pathMatch[1];
   }
@@ -58,9 +68,11 @@ function detectChain() {
 
 // Check if we're on a trend/listing page
 function isListingPage() {
-  // Support trend pages and chain pages
-  return location.href.includes('/trend') ||
-         location.href.includes('/chain/') ||
+  const url = location.href;
+  // Support trade pages, trend pages (with or without ID), and chain pages
+  return url.includes('/trade') ||
+         url.includes('/trend') ||
+         url.includes('/chain/') ||
          /gmgn\.ai\/[^\/]+(\?|$)/.test(location.pathname);
 }
 
@@ -263,7 +275,7 @@ function tokenMatchesFilters(tokenRow) {
 
 // Helper function to check if a value matches the threshold criteria
 // Returns true if: value < thresholdLess OR value > thresholdGreater
-// Both thresholds are optional (can be null)
+// With mutually exclusive filters, only one threshold will be set at a time
 function checkThresholdMatch(value, filterConfig) {
   const { thresholdLess, thresholdGreater } = filterConfig;
 
@@ -275,24 +287,23 @@ function checkThresholdMatch(value, filterConfig) {
     return false;
   }
 
-  // Check if value matches at least one of the criteria
-  let matchesLess = false;
-  let matchesGreater = false;
-
-  if (thresholdLess !== null && value < thresholdLess) {
-    matchesLess = true;
-    console.log(`  [checkThresholdMatch] ✓ matches less: ${value} < ${thresholdLess}`);
+  // With mutually exclusive filters, only one threshold should be set
+  // Check "Less than" threshold
+  if (thresholdLess !== null) {
+    const matches = value < thresholdLess;
+    console.log(`  [checkThresholdMatch] Less than: ${value} < ${thresholdLess} = ${matches}`);
+    return matches;
   }
 
-  if (thresholdGreater !== null && value > thresholdGreater) {
-    matchesGreater = true;
-    console.log(`  [checkThresholdMatch] ✓ matches greater: ${value} > ${thresholdGreater}`);
+  // Check "Greater than" threshold
+  if (thresholdGreater !== null) {
+    const matches = value > thresholdGreater;
+    console.log(`  [checkThresholdMatch] Greater than: ${value} > ${thresholdGreater} = ${matches}`);
+    return matches;
   }
 
-  // Match if either condition is true
-  const result = matchesLess || matchesGreater;
-  console.log(`  [checkThresholdMatch] Final result: ${result} (matchesLess: ${matchesLess}, matchesGreater: ${matchesGreater})`);
-  return result;
+  // Fallback (shouldn't reach here with proper validation)
+  return false;
 }
 
 // Highlight a token row
