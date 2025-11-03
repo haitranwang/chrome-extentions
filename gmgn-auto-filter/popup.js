@@ -10,10 +10,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const settingsForm = document.getElementById('settingsForm');
   const resetBtn = document.getElementById('resetBtn');
   const extensionEnabled = document.getElementById('extensionEnabled');
+  const soundEnabled = document.getElementById('soundEnabled');
 
   if (settingsForm) settingsForm.addEventListener('submit', saveSettings);
   if (resetBtn) resetBtn.addEventListener('click', resetSettings);
   if (extensionEnabled) extensionEnabled.addEventListener('change', handleExtensionToggle);
+  if (soundEnabled) soundEnabled.addEventListener('change', handleSoundToggle);
 
   // Filter checkbox change handlers - enable/disable input fields
   setupFilterCheckboxes();
@@ -141,13 +143,18 @@ function applyMutualExclusivity(lessId, greaterId) {
   }
 }
 
+
 // Load saved settings
 function loadSettings() {
-  chrome.storage.local.get(['cooldownMinutes', 'extensionEnabled', 'filterConfig'], (data) => {
+  chrome.storage.local.get(['cooldownMinutes', 'extensionEnabled', 'filterConfig', 'soundEnabled', 'audioUnlocked'], (data) => {
     if (data.cooldownMinutes) {
       document.getElementById('cooldownMinutes').value = data.cooldownMinutes;
     }
     document.getElementById('extensionEnabled').checked = data.extensionEnabled !== false;
+    document.getElementById('soundEnabled').checked = data.soundEnabled !== false;
+
+    // Note: If sound is enabled but audio is not unlocked, user needs to toggle
+    // the switch again (which provides user gesture) to unlock audio
 
     // Load filter configuration
     if (data.filterConfig) {
@@ -220,6 +227,30 @@ function handleExtensionToggle() {
   chrome.storage.local.set({ extensionEnabled: enabled }, () => {
     showStatus(enabled ? 'Extension enabled!' : 'Extension disabled!', 'success');
     loadStats();
+  });
+}
+
+// Handle sound toggle
+function handleSoundToggle() {
+  const enabled = document.getElementById('soundEnabled').checked;
+
+  // Save the setting
+  chrome.storage.local.set({ soundEnabled: enabled }, () => {
+    if (enabled) {
+      // When enabling sound, unlock audio (toggle click is a user gesture)
+      chrome.runtime.sendMessage({ action: 'unlockAudio' }, (response) => {
+        if (response && response.success) {
+          showStatus('✅ Sound notification enabled!', 'success');
+        } else {
+          showStatus('⚠️ Sound enabled but failed to unlock audio. Please try again.', 'error');
+          // Revert checkbox if unlock failed
+          document.getElementById('soundEnabled').checked = false;
+          chrome.storage.local.set({ soundEnabled: false });
+        }
+      });
+    } else {
+      showStatus('🔇 Sound notification disabled!', 'success');
+    }
   });
 }
 
@@ -318,6 +349,7 @@ function saveSettings(e) {
 function resetSettings() {
   if (confirm('Reset to default settings?')) {
     document.getElementById('cooldownMinutes').value = 15;
+    document.getElementById('soundEnabled').checked = false;
 
     // Reset filter configuration
     const defaultConfig = {
@@ -352,7 +384,8 @@ function resetSettings() {
 
     chrome.storage.local.set({
       cooldownMinutes: 15,
-      filterConfig: defaultConfig
+      filterConfig: defaultConfig,
+      soundEnabled: false
     }, () => {
       showStatus('Settings reset to defaults!', 'success');
       loadStats();

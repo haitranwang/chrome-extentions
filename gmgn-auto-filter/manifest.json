@@ -5,7 +5,9 @@
   "description": "GMGN extension: Auto-open token tabs with custom price change filters, highlight matching tokens, and track opened tokens across multiple blockchains",
   "permissions": [
     "tabs",
-    "storage"
+    "storage",
+    "scripting",
+    "offscreen"
   ],
   "host_permissions": [
     "https://*.gmgn.ai/*"
@@ -35,7 +37,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["icon16.png", "icon48.png", "icon128.png"],
+      "resources": ["icon16.png", "icon48.png", "icon128.png", "beep.mp3"],
       "matches": ["https://*.gmgn.ai/*"]
     }
   ]

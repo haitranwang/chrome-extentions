@@ -38,10 +38,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const settingsForm = document.getElementById('settingsForm');
   const resetBtn = document.getElementById('resetBtn');
   const extensionEnabled = document.getElementById('extensionEnabled');
+  const soundEnabled = document.getElementById('soundEnabled');
 
   if (settingsForm) settingsForm.addEventListener('submit', saveSettings);
   if (resetBtn) resetBtn.addEventListener('click', resetSettings);
   if (extensionEnabled) extensionEnabled.addEventListener('change', handleExtensionToggle);
+  if (soundEnabled) soundEnabled.addEventListener('change', handleSoundToggle);
 
   console.log('All event listeners attached');
 });
@@ -75,11 +77,12 @@ function switchTab(tabName) {
 
 // Load saved settings
 function loadSettings() {
-  chrome.storage.local.get(['cooldownMinutes', 'extensionEnabled'], (data) => {
+  chrome.storage.local.get(['cooldownMinutes', 'extensionEnabled', 'soundEnabled', 'audioUnlocked'], (data) => {
     if (data.cooldownMinutes) {
       document.getElementById('cooldownMinutes').value = data.cooldownMinutes;
     }
     document.getElementById('extensionEnabled').checked = data.extensionEnabled !== false;
+    document.getElementById('soundEnabled').checked = data.soundEnabled !== false;
   });
 }
 
@@ -111,6 +114,30 @@ function handleExtensionToggle() {
   });
 }
 
+// Handle sound toggle
+function handleSoundToggle() {
+  const enabled = document.getElementById('soundEnabled').checked;
+
+  // Save the setting
+  chrome.storage.local.set({ soundEnabled: enabled }, () => {
+    if (enabled) {
+      // When enabling sound, unlock audio (toggle click is a user gesture)
+      chrome.runtime.sendMessage({ action: 'unlockAudio' }, (response) => {
+        if (response && response.success) {
+          showStatus('✅ Sound notification enabled!', 'success');
+        } else {
+          showStatus('⚠️ Sound enabled but failed to unlock audio. Please try again.', 'error');
+          // Revert checkbox if unlock failed
+          document.getElementById('soundEnabled').checked = false;
+          chrome.storage.local.set({ soundEnabled: false });
+        }
+      });
+    } else {
+      showStatus('🔇 Sound notification disabled!', 'success');
+    }
+  });
+}
+
 // Save settings
 function saveSettings(e) {
   e.preventDefault();
@@ -134,10 +161,12 @@ function saveSettings(e) {
 function resetSettings() {
   if (confirm('Reset to default settings?')) {
     document.getElementById('cooldownMinutes').value = 15;
+    document.getElementById('soundEnabled').checked = false;
     const cooldownMinutes = 15;
 
     chrome.storage.local.set({
-      cooldownMinutes: cooldownMinutes
+      cooldownMinutes: cooldownMinutes,
+      soundEnabled: false
     }, () => {
       showStatus('Settings reset to defaults!', 'success');
       loadStats();

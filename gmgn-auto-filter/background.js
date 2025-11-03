@@ -5,13 +5,15 @@ let tokenUrlToId = new Map(); // tokenUrl -> tokenId
 let tabIdToTokenInfo = new Map(); // tabId -> {tokenId, tokenUrl, timestamp}
 let tokensBeingOpened = new Set(); // Track tokens that are currently being opened (to prevent race conditions)
 let settings = {
-  cooldownMinutes: 15
+  cooldownMinutes: 15,
+  soundEnabled: false
 };
 
 // Load settings from storage
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['cooldownMinutes']);
+  const data = await chrome.storage.local.get(['cooldownMinutes', 'soundEnabled']);
   if (data.cooldownMinutes) settings.cooldownMinutes = data.cooldownMinutes;
+  if (data.soundEnabled !== undefined) settings.soundEnabled = data.soundEnabled;
   console.log('Settings loaded:', settings);
 }
 
@@ -28,6 +30,155 @@ chrome.storage.onChanged.addListener(() => {
 
 // Initialize settings on startup
 loadSettings();
+
+// Create offscreen document for audio playback
+async function createOffscreenDocument() {
+  try {
+    // Check if offscreen document already exists
+    const hasDoc = await chrome.offscreen.hasDocument();
+    if (hasDoc) {
+      console.log('🔔 Offscreen document already exists');
+      return true;
+    }
+
+    // Create offscreen document with AUDIO_PLAYBACK reason
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['AUDIO_PLAYBACK'],
+      justification: 'Play notification sounds when tokens match filters'
+    });
+    console.log('✅ Offscreen document created');
+    return true;
+  } catch (error) {
+    // If error is about document already existing, that's okay
+    if (error.message && error.message.includes('already exists')) {
+      console.log('🔔 Offscreen document already exists (from error)');
+      return true;
+    }
+    // If error is about single document limit, check if one exists
+    if (error.message && error.message.includes('single offscreen document')) {
+      const hasDoc = await chrome.offscreen.hasDocument();
+      if (hasDoc) {
+        console.log('🔔 Offscreen document exists (checked after error)');
+        return true;
+      }
+    }
+    console.error('❌ Error creating offscreen document:', error);
+    return false;
+  }
+}
+
+// Unlock audio in offscreen document (requires user gesture)
+async function unlockAudio() {
+  try {
+    // Ensure offscreen document exists
+    await createOffscreenDocument();
+
+    // Wait a moment for offscreen document to be ready
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Send message to offscreen to unlock audio
+    // Note: Messages from background to offscreen should work, but we need to handle response properly
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'UNLOCK_AUDIO'
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          const errorMsg = chrome.runtime.lastError.message || chrome.runtime.lastError.toString();
+          console.error('❌ Error sending message to offscreen:', errorMsg);
+
+          // If document doesn't exist, try to recreate it once
+          if (errorMsg.includes('Receiving end does not exist')) {
+            console.log('🔔 Offscreen document missing, attempting to recreate...');
+            createOffscreenDocument().then(() => {
+              // Retry unlock after recreation
+              setTimeout(() => {
+                chrome.runtime.sendMessage({ action: 'UNLOCK_AUDIO' }, (retryResponse) => {
+                  if (!chrome.runtime.lastError && retryResponse && retryResponse.success) {
+                    chrome.storage.local.set({ audioUnlocked: true });
+                    resolve(true);
+                  } else {
+                    resolve(false);
+                  }
+                });
+              }, 200);
+            });
+            return;
+          }
+
+          resolve(false);
+          return;
+        }
+
+        if (response && response.success) {
+          console.log('✅ Audio unlocked successfully');
+          chrome.storage.local.set({ audioUnlocked: true });
+          resolve(true);
+        } else {
+          console.error('❌ Failed to unlock audio');
+          resolve(false);
+        }
+      });
+    });
+  } catch (error) {
+    console.error('❌ Error unlocking audio:', error);
+    return false;
+  }
+}
+
+// Function to play notification sound when a new token is opened
+async function playNotificationSound() {
+  console.log('🔔 Attempting to play notification sound');
+
+  // Check if sound is enabled - reload settings from storage to be sure
+  const data = await chrome.storage.local.get(['soundEnabled', 'audioUnlocked']);
+  const soundEnabled = data.soundEnabled !== false; // Default to true if not set
+
+  console.log(`🔔 Sound enabled from storage: ${soundEnabled}, audioUnlocked: ${data.audioUnlocked}`);
+
+  if (!soundEnabled) {
+    console.log('🔇 Sound notification disabled in settings');
+    return;
+  }
+
+  // Check if audio is unlocked
+  if (!data.audioUnlocked) {
+    console.log('🔇 Audio not unlocked yet, user needs to enable sound first');
+    return;
+  }
+
+  try {
+    // Ensure offscreen document exists
+    const docCreated = await createOffscreenDocument();
+    if (!docCreated) {
+      console.error('🔇 Failed to create offscreen document');
+      return;
+    }
+
+    // Wait a bit to ensure offscreen document is ready
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Send message to offscreen to play beep
+    chrome.runtime.sendMessage({
+      action: 'PLAY_BEEP'
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('❌ Error sending PLAY_BEEP message:', chrome.runtime.lastError.message);
+        // If document doesn't exist, try to recreate it
+        if (chrome.runtime.lastError.message.includes('Receiving end does not exist')) {
+          console.log('🔔 Attempting to recreate offscreen document...');
+          createOffscreenDocument().then(() => {
+            // Don't retry immediately, let next notification try
+          });
+        }
+        return;
+      }
+      console.log('🔔 Play beep message sent successfully');
+    });
+  } catch (error) {
+    console.error('🔔 Error playing notification sound:', error);
+  }
+}
 
 // Listen for tab removal to clean up counters
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
@@ -51,7 +202,9 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
 // Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'tokenMatchesFilter') {
+    console.log(`🎯 Received tokenMatchesFilter for token ${request.tokenId} on chain ${request.chain || 'sol'}`);
     openTokenTab(request.tokenId, request.chain || 'sol').then((opened) => {
+      console.log(`🎯 openTokenTab result for ${request.tokenId}: ${opened}`);
       if (opened) {
         const now = Date.now();
         const cooldownMs = settings.cooldownMinutes * 60 * 1000;
@@ -64,6 +217,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       } else {
         sendResponse({ success: false, tokenId: request.tokenId });
       }
+    });
+    return true; // Keep message channel open for async response
+  } else if (request.action === 'unlockAudio') {
+    // Request from popup to unlock audio (with user gesture)
+    unlockAudio().then(success => {
+      sendResponse({ success });
     });
     return true; // Keep message channel open for async response
   } else if (request.action === 'getStats') {
@@ -98,6 +257,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Function to open token tab with configurable cooldown
 async function openTokenTab(tokenId, chain = 'sol') {
+  console.log(`🚀 openTokenTab called for ${tokenId} on ${chain}`);
   try {
     const now = Date.now();
     const cooldownPeriod = settings.cooldownMinutes * 60 * 1000; // Convert to milliseconds
@@ -132,8 +292,8 @@ async function openTokenTab(tokenId, chain = 'sol') {
     // Mark token as being opened BEFORE creating tab (prevents race conditions)
     tokensBeingOpened.add(tokenKey);
 
-    // Open new tab and store the mapping
-    const createdTab = await chrome.tabs.create({ url: tokenUrl, active: false });
+    // Open new tab and store the mapping - active: true to auto-focus the new tab
+    const createdTab = await chrome.tabs.create({ url: tokenUrl, active: true });
     openedTokens.set(tokenId, now);
     tokenUrlToId.set(tokenUrl, tokenId);
     tabIdToTokenInfo.set(createdTab.id, { tokenId, tokenUrl, timestamp: now });
@@ -142,6 +302,9 @@ async function openTokenTab(tokenId, chain = 'sol') {
     tokensBeingOpened.delete(tokenKey);
 
     console.log(`✅ Opened token ${tokenId} on ${chain} (${tabIdToTokenInfo.size} tabs)`);
+
+    // Play notification sound to alert user
+    playNotificationSound();
 
     // Clean up old entries (older than cooldown period)
     for (const [token, timestamp] of openedTokens.entries()) {

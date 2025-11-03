@@ -340,14 +340,24 @@
   </div>
 
   <div class="content">
-    <div class="form-group" style="border-bottom: 1px solid #3a3a3a; padding-bottom: 10px; margin-bottom: 12px;">
-      <label style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 8px; background: #252525; border: 1px solid #3a3a3a; border-radius: 6px; margin-bottom: 0;">
+      <div class="form-group" style="border-bottom: 1px solid #3a3a3a; padding-bottom: 10px; margin-bottom: 12px;">
+      <label style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 8px; background: #252525; border: 1px solid #3a3a3a; border-radius: 6px; margin-bottom: 8px;">
           <span>
             <strong style="font-size: 13px;">Enable Extension</strong>
             <span class="label-description" style="font-size: 10px;">Turn auto-open on/off</span>
           </span>
           <label class="switch">
             <input type="checkbox" id="extensionEnabled" checked>
+            <span class="slider"></span>
+          </label>
+        </label>
+        <label style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 8px; background: #252525; border: 1px solid #3a3a3a; border-radius: 6px; margin-bottom: 0;">
+          <span>
+            <strong style="font-size: 13px;">🔔 Sound Notification</strong>
+            <span class="label-description" style="font-size: 10px;">Play sound when token opens</span>
+          </span>
+          <label class="switch">
+            <input type="checkbox" id="soundEnabled">
             <span class="slider"></span>
           </label>
         </label>
