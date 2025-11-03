@@ -146,9 +146,12 @@ function applyMutualExclusivity(lessId, greaterId) {
 
 // Load saved settings
 function loadSettings() {
-  chrome.storage.local.get(['cooldownMinutes', 'extensionEnabled', 'filterConfig', 'soundEnabled', 'audioUnlocked'], (data) => {
+  chrome.storage.local.get(['cooldownMinutes', 'extensionEnabled', 'filterConfig', 'soundEnabled', 'audioUnlocked', 'maxTabsOpen'], (data) => {
     if (data.cooldownMinutes) {
       document.getElementById('cooldownMinutes').value = data.cooldownMinutes;
+    }
+    if (data.maxTabsOpen) {
+      document.getElementById('maxTabsOpen').value = data.maxTabsOpen;
     }
     document.getElementById('extensionEnabled').checked = data.extensionEnabled !== false;
     document.getElementById('soundEnabled').checked = data.soundEnabled !== false;
@@ -259,9 +262,15 @@ function saveSettings(e) {
   e.preventDefault();
 
   const cooldownMinutes = parseInt(document.getElementById('cooldownMinutes').value);
+  const maxTabsOpen = parseInt(document.getElementById('maxTabsOpen').value);
 
   if (isNaN(cooldownMinutes) || cooldownMinutes < 1 || cooldownMinutes > 60) {
     showStatus('Invalid cooldown period (1-60 minutes)', 'error');
+    return;
+  }
+
+  if (isNaN(maxTabsOpen) || maxTabsOpen < 1 || maxTabsOpen > 50) {
+    showStatus('Invalid max tabs (1-50)', 'error');
     return;
   }
 
@@ -338,6 +347,7 @@ function saveSettings(e) {
 
   chrome.storage.local.set({
     cooldownMinutes: cooldownMinutes,
+    maxTabsOpen: maxTabsOpen,
     filterConfig: filterConfig
   }, () => {
     showStatus('Settings saved!', 'success');
@@ -349,6 +359,7 @@ function saveSettings(e) {
 function resetSettings() {
   if (confirm('Reset to default settings?')) {
     document.getElementById('cooldownMinutes').value = 15;
+    document.getElementById('maxTabsOpen').value = 5;
     document.getElementById('soundEnabled').checked = false;
 
     // Reset filter configuration
@@ -384,6 +395,7 @@ function resetSettings() {
 
     chrome.storage.local.set({
       cooldownMinutes: 15,
+      maxTabsOpen: 5,
       filterConfig: defaultConfig,
       soundEnabled: false
     }, () => {

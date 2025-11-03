@@ -4,16 +4,19 @@ let openedTokens = new Map(); // tokenId -> timestamp
 let tokenUrlToId = new Map(); // tokenUrl -> tokenId
 let tabIdToTokenInfo = new Map(); // tabId -> {tokenId, tokenUrl, timestamp}
 let tokensBeingOpened = new Set(); // Track tokens that are currently being opened (to prevent race conditions)
+let pendingTabCount = 0; // Track number of tabs currently being created
 let settings = {
   cooldownMinutes: 15,
-  soundEnabled: false
+  soundEnabled: false,
+  maxTabsOpen: 5
 };
 
 // Load settings from storage
 async function loadSettings() {
-  const data = await chrome.storage.local.get(['cooldownMinutes', 'soundEnabled']);
+  const data = await chrome.storage.local.get(['cooldownMinutes', 'soundEnabled', 'maxTabsOpen']);
   if (data.cooldownMinutes) settings.cooldownMinutes = data.cooldownMinutes;
   if (data.soundEnabled !== undefined) settings.soundEnabled = data.soundEnabled;
+  if (data.maxTabsOpen !== undefined) settings.maxTabsOpen = data.maxTabsOpen;
   console.log('Settings loaded:', settings);
 }
 
@@ -296,8 +299,19 @@ async function openTokenTab(tokenId, chain = 'solana') {
       }
     }
 
-    // Mark token as being opened BEFORE creating tab (prevents race conditions)
+    // Check max tabs limit RIGHT BEFORE creating tab (prevents race conditions)
+    // Include pending tabs in the count to prevent race conditions when multiple tokens are processed simultaneously
+    const currentTabCount = tabIdToTokenInfo.size;
+    const totalTabCount = currentTabCount + pendingTabCount;
+    const maxTabs = settings.maxTabsOpen || 5; // Default to 5 if not set
+    if (totalTabCount >= maxTabs) {
+      console.log(`⚠️ Max tabs limit reached (${currentTabCount} open + ${pendingTabCount} pending = ${totalTabCount}/${maxTabs}). Cannot open token ${tokenId} (${chain})`);
+      return false;
+    }
+
+    // Mark token as being opened and increment pending count BEFORE creating tab (prevents race conditions)
     tokensBeingOpened.add(tokenKey);
+    pendingTabCount++;
 
     // Open new tab and store the mapping - active: true to auto-focus the new tab
     const createdTab = await chrome.tabs.create({ url: tokenUrl, active: true });
@@ -305,8 +319,9 @@ async function openTokenTab(tokenId, chain = 'solana') {
     tokenUrlToId.set(tokenUrl, tokenId);
     tabIdToTokenInfo.set(createdTab.id, { tokenId, tokenUrl, timestamp: now });
 
-    // Remove from "being opened" set after successful creation
+    // Remove from "being opened" set and decrement pending count after successful creation
     tokensBeingOpened.delete(tokenKey);
+    pendingTabCount = Math.max(0, pendingTabCount - 1); // Ensure count never goes negative
 
     console.log(`✅ Opened token ${tokenId} on ${chain} (${tabIdToTokenInfo.size} tabs)`);
 
@@ -337,9 +352,10 @@ async function openTokenTab(tokenId, chain = 'solana') {
     return true; // Successfully opened tab
   } catch (error) {
     console.error('Error opening token tab:', error);
-    // Make sure to remove from "being opened" set on error
+    // Make sure to remove from "being opened" set and decrement pending count on error
     const tokenKey = `${chain || 'solana'}:${tokenId}`;
     tokensBeingOpened.delete(tokenKey);
+    pendingTabCount = Math.max(0, pendingTabCount - 1); // Ensure count never goes negative
     return false;
   }
 }
