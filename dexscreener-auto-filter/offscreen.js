@@ -100,7 +100,7 @@ async function ensureAudioReady() {
   }
 }
 
-// Play beep sound using Web Audio API
+// Play notification sound using audio file
 async function playBeep() {
   // Ensure audio is ready (this handles case where context was reset)
   const isReady = await ensureAudioReady();
@@ -111,57 +111,36 @@ async function playBeep() {
   }
 
   try {
-    // Double-check AudioContext exists and is usable
-    if (!audioContext) {
-      console.error('🔇 AudioContext not available');
-      return;
+    // Get the URL of the audio file using chrome.runtime.getURL
+    const audioUrl = chrome.runtime.getURL('tieng_ting_mp3-www_tiengdong_com.mp3');
+
+    // Create an Audio element and play the sound
+    const audio = new Audio(audioUrl);
+    audio.volume = 1.0; // Set volume to maximum
+
+    // Play the audio file
+    const playPromise = audio.play();
+
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          console.log('✅ Notification sound played successfully');
+        })
+        .catch(error => {
+          console.error('❌ Error playing notification sound:', error);
+          // If play() fails, it might be due to autoplay restrictions
+          // Try to resume AudioContext first, then retry
+          if (audioContext && audioContext.state !== 'running') {
+            audioContext.resume().then(() => {
+              audio.play().catch(err => {
+                console.error('❌ Failed to play audio after resume:', err);
+              });
+            });
+          }
+        });
     }
-
-    // If not running, try to resume one more time
-    if (audioContext.state !== 'running') {
-      console.log('🔔 AudioContext not running before play, attempting resume...');
-      try {
-        await audioContext.resume();
-      } catch (e) {
-        console.error('🔔 Failed to resume before play:', e);
-      }
-    }
-
-    // Proceed with playback even if state is not 'running'
-    // Sometimes browsers allow playback despite suspended state
-    const startTime = audioContext.currentTime;
-
-    // First tone (higher pitch)
-    const oscillator1 = audioContext.createOscillator();
-    const gainNode1 = audioContext.createGain();
-    oscillator1.connect(gainNode1);
-    gainNode1.connect(audioContext.destination);
-
-    oscillator1.frequency.value = 800;
-    oscillator1.type = 'sine';
-    gainNode1.gain.setValueAtTime(0.3, startTime);
-    gainNode1.gain.exponentialRampToValueAtTime(0.01, startTime + 0.3);
-
-    oscillator1.start(startTime);
-    oscillator1.stop(startTime + 0.3);
-
-    // Second tone (lower pitch) after brief delay
-    const oscillator2 = audioContext.createOscillator();
-    const gainNode2 = audioContext.createGain();
-    oscillator2.connect(gainNode2);
-    gainNode2.connect(audioContext.destination);
-
-    oscillator2.frequency.value = 600;
-    oscillator2.type = 'sine';
-    gainNode2.gain.setValueAtTime(0.3, startTime + 0.1);
-    gainNode2.gain.exponentialRampToValueAtTime(0.01, startTime + 0.3);
-
-    oscillator2.start(startTime + 0.1);
-    oscillator2.stop(startTime + 0.3);
-
-    console.log('✅ Beep played successfully');
   } catch (error) {
-    console.error('❌ Error playing beep:', error);
+    console.error('❌ Error playing notification sound:', error);
   }
 }
 

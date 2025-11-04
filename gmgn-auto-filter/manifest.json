@@ -37,7 +37,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["icon16.png", "icon48.png", "icon128.png", "beep.mp3"],
+      "resources": ["icon16.png", "icon48.png", "icon128.png", "tieng_ting_mp3-www_tiengdong_com.mp3"],
       "matches": ["https://*.gmgn.ai/*"]
     }
   ]
