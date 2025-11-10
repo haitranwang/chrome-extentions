@@ -29,6 +29,7 @@ const CACHE_DURATION = 500; // Cache for 500ms (reduced to catch filter changes 
 function invalidateTokenCache() {
   cachedTokenLinks = null;
   cacheTimestamp = 0;
+  invalidateColumnIndexCache();
 }
 
 // Flag to prevent recursive updates
@@ -76,12 +77,116 @@ function isListingPage() {
          /gmgn\.ai\/[^\/]+(\?|$)/.test(location.pathname);
 }
 
-// CSS selectors for price change columns (as provided)
-const COLUMN_SELECTORS = {
-  oneMin: '#GlobalScrollDomId > div > div.py-0.overflow-x-auto.px-\\[8px\\] > div.px-0.py-0.overflow-x-auto.block > div > div > div > div > div.g-table-tbody-virtual.g-table-tbody > div.g-table-tbody-virtual-holder > div > div > div:nth-child(1) > div:nth-child(12) > div > span',
-  fiveMin: '#GlobalScrollDomId > div > div.py-0.overflow-x-auto.px-\\[8px\\] > div.px-0.py-0.overflow-x-auto.block > div > div > div > div > div.g-table-tbody-virtual.g-table-tbody > div.g-table-tbody-virtual-holder > div > div > div:nth-child(1) > div:nth-child(13) > div > span',
-  oneHour: '#GlobalScrollDomId > div > div.py-0.overflow-x-auto.px-\\[8px\\] > div.px-0.py-0.overflow-x-auto.block > div > div > div > div > div.g-table-tbody-virtual.g-table-tbody > div.g-table-tbody-virtual-holder > div > div > div:nth-child(1) > div:nth-child(14) > div > span'
+// Column header labels for dynamic index detection
+const COLUMN_LABEL_PATTERNS = {
+  oneMin: ['1m%'],
+  fiveMin: ['5m%'],
+  oneHour: ['1h%']
 };
+
+// Cache for dynamically detected column indices
+let cachedColumnIndices = null;
+let columnIndexCacheTimestamp = 0;
+const COLUMN_INDEX_CACHE_DURATION = 2000;
+
+function invalidateColumnIndexCache() {
+  cachedColumnIndices = null;
+  columnIndexCacheTimestamp = 0;
+}
+
+function normalizeHeaderText(text) {
+  return (text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function headerMatchesPatterns(normalizedText, patterns) {
+  return patterns.some(pattern => normalizedText.includes(pattern.toLowerCase()));
+}
+
+function getColumnIndices() {
+  const now = Date.now();
+  if (cachedColumnIndices && (now - columnIndexCacheTimestamp) < COLUMN_INDEX_CACHE_DURATION) {
+    return cachedColumnIndices;
+  }
+
+  const indices = {
+    oneMin: null,
+    fiveMin: null,
+    oneHour: null
+  };
+
+  const headerSelector = '#GlobalScrollDomId .g-table-header table thead tr th';
+  let headerCells = document.querySelectorAll(headerSelector);
+
+  if (!headerCells || headerCells.length === 0) {
+    headerCells = document.querySelectorAll('.g-table-header table thead tr th');
+  }
+
+  headerCells.forEach((headerCell, idx) => {
+    const normalizedText = normalizeHeaderText(headerCell.textContent);
+
+    Object.entries(COLUMN_LABEL_PATTERNS).forEach(([key, patterns]) => {
+      if (indices[key] !== null) {
+        return;
+      }
+      if (headerMatchesPatterns(normalizedText, patterns)) {
+        indices[key] = idx + 1; // Convert to 1-based index
+      }
+    });
+  });
+
+  cachedColumnIndices = indices;
+  columnIndexCacheTimestamp = now;
+
+  return indices;
+}
+
+function getCellByColumnIndex(row, columnIndex) {
+  if (!row || typeof columnIndex !== 'number' || columnIndex < 1) {
+    return null;
+  }
+
+  try {
+    const directChildren = row.querySelectorAll(':scope > div');
+    if (directChildren.length >= columnIndex) {
+      return directChildren[columnIndex - 1];
+    }
+  } catch (error) {
+    console.log('⚠️ Error querying direct div children:', error);
+  }
+
+  const fallbackChildren = row.children;
+  if (fallbackChildren && fallbackChildren.length >= columnIndex) {
+    return fallbackChildren[columnIndex - 1];
+  }
+
+  return row.querySelector(`div:nth-child(${columnIndex})`);
+}
+
+function extractPercentValueFromCell(cell) {
+  if (!cell) {
+    return null;
+  }
+
+  let textContent = '';
+
+  const prioritySpan = cell.querySelector('span');
+  if (prioritySpan && prioritySpan.textContent) {
+    textContent = prioritySpan.textContent;
+  } else {
+    textContent = cell.textContent || '';
+  }
+
+  const match = textContent.match(/-?\d+(\.\d+)?\s*%/);
+  if (!match) {
+    return null;
+  }
+
+  const value = parseFloat(match[0].replace('%', '').trim());
+  return isNaN(value) ? null : value;
+}
 
 // Track last processed tokens to avoid reprocessing
 let lastProcessedTokens = new Set();
@@ -160,73 +265,48 @@ function tokenMatchesFilters(tokenRow) {
     return false;
   }
 
-  // Find values using nth-child selectors directly on cells
-  // GMGN uses div:nth-child(12) for 1m%, div:nth-child(13) for 5m%, div:nth-child(14) for 1h%
+  const columnIndices = getColumnIndices();
 
   let oneMinValue = null;
   let fiveMinValue = null;
   let oneHourValue = null;
 
-  // Extract 1m% value from nth-child(12)
+  // Extract 1m% value
   if (filterConfig.oneMin.enabled) {
     try {
-      const cell = tokenRow.querySelector('div:nth-child(12)');
-      if (cell) {
-        const span = cell.querySelector('div > span');
-        if (span) {
-          const text = span.textContent.trim();
-          if (text.includes('%')) {
-            const value = parseFloat(text.replace('%', ''));
-            if (!isNaN(value)) {
-              oneMinValue = value;
-              console.log(`🔍 Found 1m% value: ${value} from div:nth-child(12)`);
-            }
-          }
-        }
+      const cell = getCellByColumnIndex(tokenRow, columnIndices.oneMin);
+      const value = extractPercentValueFromCell(cell);
+      if (value !== null) {
+        oneMinValue = value;
+        console.log(`🔍 Found 1m% value: ${value} from dynamic column index ${columnIndices.oneMin}`);
       }
     } catch (e) {
       console.log('Error extracting 1m%:', e);
     }
   }
 
-  // Extract 5m% value from nth-child(13)
+  // Extract 5m% value
   if (filterConfig.fiveMin.enabled) {
     try {
-      const cell = tokenRow.querySelector('div:nth-child(13)');
-      if (cell) {
-        const span = cell.querySelector('div > span');
-        if (span) {
-          const text = span.textContent.trim();
-          if (text.includes('%')) {
-            const value = parseFloat(text.replace('%', ''));
-            if (!isNaN(value)) {
-              fiveMinValue = value;
-              console.log(`🔍 Found 5m% value: ${value} from div:nth-child(13)`);
-            }
-          }
-        }
+      const cell = getCellByColumnIndex(tokenRow, columnIndices.fiveMin);
+      const value = extractPercentValueFromCell(cell);
+      if (value !== null) {
+        fiveMinValue = value;
+        console.log(`🔍 Found 5m% value: ${value} from dynamic column index ${columnIndices.fiveMin}`);
       }
     } catch (e) {
       console.log('Error extracting 5m%:', e);
     }
   }
 
-  // Extract 1h% value from nth-child(14)
+  // Extract 1h% value
   if (filterConfig.oneHour.enabled) {
     try {
-      const cell = tokenRow.querySelector('div:nth-child(14)');
-      if (cell) {
-        const span = cell.querySelector('div > span');
-        if (span) {
-          const text = span.textContent.trim();
-          if (text.includes('%')) {
-            const value = parseFloat(text.replace('%', ''));
-            if (!isNaN(value)) {
-              oneHourValue = value;
-              console.log(`🔍 Found 1h% value: ${value} from div:nth-child(14)`);
-            }
-          }
-        }
+      const cell = getCellByColumnIndex(tokenRow, columnIndices.oneHour);
+      const value = extractPercentValueFromCell(cell);
+      if (value !== null) {
+        oneHourValue = value;
+        console.log(`🔍 Found 1h% value: ${value} from dynamic column index ${columnIndices.oneHour}`);
       }
     } catch (e) {
       console.log('Error extracting 1h%:', e);
