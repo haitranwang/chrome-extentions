@@ -1,10 +1,16 @@
 // Popup script for GMGN Auto Filter settings
 
+// Track opened tokens for cooldown display
+let openedTokensData = new Map(); // tokenId -> {timestamp, cooldownMs}
+let cooldownUpdateInterval = null;
+
 document.addEventListener('DOMContentLoaded', () => {
   console.log('Popup DOM loaded');
 
   loadSettings();
   loadStats();
+  loadCooldownTimers();
+  startCooldownUpdates();
 
   // Setup event listeners
   const settingsForm = document.getElementById('settingsForm');
@@ -22,6 +28,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Setup mutually exclusive filter input logic
   setupMutuallyExclusiveFilters();
+
+  // Listen for real-time updates when tokens are opened
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'tokenOpened') {
+      // Update immediately when a token is opened
+      openedTokensData.set(request.tokenId, {
+        timestamp: request.timestamp,
+        cooldownMs: request.cooldownMs
+      });
+      updateCooldownDisplay();
+      loadStats(); // Refresh stats to update tab count
+    } else if (request.action === 'tokenTabClosed') {
+      // Token tab was closed, but cooldown is maintained
+      // Refresh the display to show updated cooldown status
+      loadCooldownTimers();
+      loadStats(); // Refresh stats to update tab count
+    }
+  });
 
   console.log('All event listeners attached');
 });
@@ -447,5 +471,99 @@ function showStatus(message, type) {
       status.textContent = '';
     }, 3000);
   }
+}
+
+// Load cooldown timers from background
+function loadCooldownTimers() {
+  chrome.runtime.sendMessage({ action: 'getOpenedTokens' }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error('Error fetching opened tokens:', chrome.runtime.lastError);
+      return;
+    }
+
+    openedTokensData.clear();
+    if (response && response.tokens) {
+      response.tokens.forEach(({ tokenId, timestamp, cooldownMs }) => {
+        openedTokensData.set(tokenId, { timestamp, cooldownMs });
+      });
+    }
+
+    updateCooldownDisplay();
+  });
+}
+
+// Format time as MM:SS or HH:MM:SS
+function formatTime(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours > 0) {
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+// Update cooldown display in popup
+function updateCooldownDisplay() {
+  const container = document.getElementById('cooldownTimersContainer');
+  if (!container) return;
+
+  const now = Date.now();
+  const activeCooldowns = [];
+
+  for (const [tokenId, data] of openedTokensData.entries()) {
+    if (data && data.timestamp && data.cooldownMs) {
+      const elapsed = now - data.timestamp;
+      const remaining = data.cooldownMs - elapsed;
+
+      if (remaining > 0) {
+        const remainingSeconds = Math.floor(remaining / 1000);
+        activeCooldowns.push({
+          tokenId: tokenId.substring(0, 8) + '...', // Truncate for display
+          fullTokenId: tokenId,
+          remainingSeconds: remainingSeconds,
+          remainingMs: remaining
+        });
+      }
+    }
+  }
+
+  // Sort by remaining time (shortest first)
+  activeCooldowns.sort((a, b) => a.remainingMs - b.remainingMs);
+
+  if (activeCooldowns.length === 0) {
+    container.innerHTML = '<div style="color: #b3b3b3; font-size: 11px; text-align: center; padding: 8px;">No tokens in cooldown</div>';
+    return;
+  }
+
+  let html = '<div style="max-height: 150px; overflow-y: auto;">';
+  activeCooldowns.forEach(({ tokenId, fullTokenId, remainingSeconds }) => {
+    const timeStr = formatTime(remainingSeconds);
+    html += `
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; margin-bottom: 4px; background: #1a1a1a; border-radius: 4px; border: 1px solid #3a3a3a;">
+        <span style="font-size: 10px; color: #b3b3b3; font-family: monospace;" title="${fullTokenId}">${tokenId}</span>
+        <span style="font-size: 11px; font-weight: 600; color: #4ade80; font-family: monospace;">${timeStr}</span>
+      </div>
+    `;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// Start periodic cooldown updates
+function startCooldownUpdates() {
+  if (cooldownUpdateInterval) {
+    clearInterval(cooldownUpdateInterval);
+  }
+
+  // Update every second for smooth countdown
+  cooldownUpdateInterval = setInterval(() => {
+    updateCooldownDisplay();
+  }, 1000);
+
+  // Also refresh data from background every 30 seconds
+  setInterval(() => {
+    loadCooldownTimers();
+  }, 30000);
 }
 

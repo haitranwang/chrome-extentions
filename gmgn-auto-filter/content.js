@@ -627,6 +627,23 @@ function fetchOpenedTokens() {
   });
 }
 
+// Listen for real-time updates when tokens are opened
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'tokenOpened') {
+    // Update immediately when a token is opened (no need to wait for periodic fetch)
+    openedTokensData.set(request.tokenId, {
+      timestamp: request.timestamp,
+      cooldownMs: request.cooldownMs
+    });
+    updateCountdownDisplays();
+    console.log(`✅ Token ${request.tokenId} opened - UI updated immediately`);
+  } else if (request.action === 'tokenTabClosed') {
+    // Token tab was closed, but cooldown is maintained
+    // Refresh the display to ensure cooldown timers are still shown
+    fetchOpenedTokens();
+  }
+});
+
 // Format time as HH:MM:SS
 function formatTime(seconds) {
   const hours = Math.floor(seconds / 3600);

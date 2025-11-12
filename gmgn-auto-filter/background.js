@@ -199,6 +199,35 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     // The token will be removed from openedTokens after cooldown period expires
 
     console.log(`🗑️ Tab closed: ${tokenId} (tab tracking removed, cooldown maintained)`);
+
+    // Broadcast update to popup and content scripts that a token tab was closed
+    // This helps keep UI in sync
+    const message = {
+      action: 'tokenTabClosed',
+      tokenId: tokenId
+    };
+
+    // Send to popup (if open)
+    try {
+      chrome.runtime.sendMessage(message).catch(() => {
+        // Ignore errors if popup is not open
+      });
+    } catch (e) {
+      // Ignore errors
+    }
+
+    // Send to all content scripts on GMGN pages
+    try {
+      chrome.tabs.query({ url: 'https://*.gmgn.ai/*' }, (tabs) => {
+        tabs.forEach(tab => {
+          chrome.tabs.sendMessage(tab.id, message).catch(() => {
+            // Ignore errors if content script is not ready
+          });
+        });
+      });
+    } catch (e) {
+      // Ignore errors
+    }
   }
 });
 
@@ -273,10 +302,13 @@ async function openTokenTab(tokenId, chain = 'sol') {
       return false; // Already being opened by another request
     }
 
-    // Check cooldown with configured period
+    // CRITICAL FIX: Check cooldown FIRST, before any other checks
+    // This must happen atomically to prevent race conditions with tab closure
     const lastOpened = openedTokens.get(tokenId);
     if (lastOpened && (now - lastOpened < cooldownPeriod)) {
-      console.log(`Token ${tokenId} (${chain}) is in cooldown (${Math.ceil((cooldownPeriod - (now - lastOpened)) / 1000 / 60)}m remaining)`);
+      const remainingMs = cooldownPeriod - (now - lastOpened);
+      const remainingMins = Math.ceil(remainingMs / 1000 / 60);
+      console.log(`Token ${tokenId} (${chain}) is in cooldown (${remainingMins}m remaining, ${Math.floor(remainingMs / 1000)}s)`);
       return false;
     }
 
@@ -290,6 +322,18 @@ async function openTokenTab(tokenId, chain = 'sol') {
         openedTokens.set(tokenId, now);
         return true; // Tab already open, consider it successful
       }
+    }
+
+    // CRITICAL FIX: Re-check cooldown after async tab query to prevent race conditions
+    // This ensures that even if a tab was closed between the first check and now,
+    // the token remains in cooldown and cannot be reopened
+    const recheckTime = Date.now();
+    const lastOpenedRecheck = openedTokens.get(tokenId);
+    if (lastOpenedRecheck && (recheckTime - lastOpenedRecheck < cooldownPeriod)) {
+      const remainingMs = cooldownPeriod - (recheckTime - lastOpenedRecheck);
+      const remainingMins = Math.ceil(remainingMs / 1000 / 60);
+      console.log(`Token ${tokenId} (${chain}) is in cooldown after tab check (${remainingMins}m remaining)`);
+      return false;
     }
 
     // Check max tabs limit RIGHT BEFORE creating tab (prevents race conditions)
@@ -317,6 +361,37 @@ async function openTokenTab(tokenId, chain = 'sol') {
     pendingTabCount = Math.max(0, pendingTabCount - 1); // Ensure count never goes negative
 
     console.log(`✅ Opened token ${tokenId} on ${chain} (${tabIdToTokenInfo.size} tabs)`);
+
+    // Broadcast update to popup and content scripts that a token was opened
+    // This ensures UI updates immediately without requiring refresh
+    const message = {
+      action: 'tokenOpened',
+      tokenId: tokenId,
+      timestamp: now,
+      cooldownMs: cooldownPeriod
+    };
+
+    // Send to popup (if open)
+    try {
+      chrome.runtime.sendMessage(message).catch(() => {
+        // Ignore errors if popup is not open
+      });
+    } catch (e) {
+      // Ignore errors
+    }
+
+    // Send to all content scripts on GMGN pages
+    try {
+      chrome.tabs.query({ url: 'https://*.gmgn.ai/*' }, (tabs) => {
+        tabs.forEach(tab => {
+          chrome.tabs.sendMessage(tab.id, message).catch(() => {
+            // Ignore errors if content script is not ready
+          });
+        });
+      });
+    } catch (e) {
+      // Ignore errors
+    }
 
     // Play notification sound to alert user
     playNotificationSound();
