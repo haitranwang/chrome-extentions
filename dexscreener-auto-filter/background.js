@@ -36,6 +36,19 @@ loadSettings();
 
 let openedFilterUrls = new Set(); // Track opened filter URLs
 
+function getCooldownKey(chain, tokenId) {
+  return chain ? `${chain}:${tokenId}` : tokenId;
+}
+
+function getCooldownTimestamp(chain, tokenId) {
+  const cooldownKey = getCooldownKey(chain, tokenId);
+  if (openedTokens.has(cooldownKey)) {
+    return openedTokens.get(cooldownKey);
+  }
+
+  return openedTokens.get(tokenId);
+}
+
 // Create offscreen document for audio playback
 async function createOffscreenDocument() {
   try {
@@ -243,11 +256,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // Keep message channel open for async response
   } else if (request.action === 'getOpenedTokens') {
     // Return list of opened tokens with timestamps for countdown display
-    const tokenData = Array.from(openedTokens.entries()).map(([tokenId, timestamp]) => ({
-      tokenId,
-      timestamp,
-      cooldownMs: settings.cooldownMinutes * 60 * 1000
-    }));
+    const tokenData = Array.from(openedTokens.entries()).map(([key, timestamp]) => {
+      const separatorIndex = key.indexOf(':');
+      if (separatorIndex > -1) {
+        return {
+          chain: key.slice(0, separatorIndex),
+          tokenId: key.slice(separatorIndex + 1),
+          timestamp,
+          cooldownMs: settings.cooldownMinutes * 60 * 1000
+        };
+      }
+
+      return {
+        tokenId: key,
+        timestamp,
+        cooldownMs: settings.cooldownMinutes * 60 * 1000
+      };
+    });
     sendResponse({ tokens: tokenData });
     return true;
   } else if (request.action === 'getOpenTabCount') {
@@ -258,7 +283,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const tokenId = request.tokenId;
     const now = Date.now();
     const cooldownPeriod = settings.cooldownMinutes * 60 * 1000;
-    const lastOpened = openedTokens.get(tokenId);
+    const lastOpened = getCooldownTimestamp(request.chain, tokenId);
     const isInCooldown = lastOpened && (now - lastOpened < cooldownPeriod);
     sendResponse({ isInCooldown: isInCooldown, tokenId: tokenId });
     return true;
@@ -281,7 +306,8 @@ async function openTokenTab(tokenId, chain = 'solana') {
     }
 
     // Check cooldown with configured period
-    const lastOpened = openedTokens.get(tokenId);
+    const cooldownKey = getCooldownKey(chain, tokenId);
+    const lastOpened = getCooldownTimestamp(chain, tokenId);
     if (lastOpened && (now - lastOpened < cooldownPeriod)) {
       console.log(`Token ${tokenId} (${chain}) is in cooldown (${Math.ceil((cooldownPeriod - (now - lastOpened)) / 1000 / 60)}m remaining)`);
       return false;
@@ -294,7 +320,7 @@ async function openTokenTab(tokenId, chain = 'solana') {
     for (const tab of tabs) {
       if (tab.url === tokenUrl) {
         console.log(`Token ${tokenId} (${chain}) already open`);
-        openedTokens.set(tokenId, now);
+        openedTokens.set(cooldownKey, now);
         return true; // Tab already open, consider it successful
       }
     }
@@ -315,7 +341,7 @@ async function openTokenTab(tokenId, chain = 'solana') {
 
     // Open new tab and store the mapping - active: true to auto-focus the new tab
     const createdTab = await chrome.tabs.create({ url: tokenUrl, active: true });
-    openedTokens.set(tokenId, now);
+    openedTokens.set(cooldownKey, now);
     tokenUrlToId.set(tokenUrl, tokenId);
     tabIdToTokenInfo.set(createdTab.id, { tokenId, tokenUrl, timestamp: now });
 

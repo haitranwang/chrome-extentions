@@ -59,6 +59,54 @@ function watchForTokens() {
 // Supported blockchain chains
 const SUPPORTED_CHAINS = ['solana', 'bsc', 'base', 'ethereum', 'pulsechain', 'polygon', 'ton',
   'hyperliquid', 'sui', 'avalanche', 'worldchain', 'abstract', 'xrpl', 'arbitrum', 'hyperevm', 'near', 'sonic'];
+const EXCLUDED_TOKEN_PATHS = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
+const MIN_TOKEN_ID_LENGTH = 20;
+
+function getTokenTrackingKey(chain, tokenId) {
+  return chain ? `${chain}:${tokenId}` : tokenId;
+}
+
+function isGlobalFilteredListingPage() {
+  const pathname = location.pathname;
+  return (pathname === '/' || pathname === '') && location.search.length > 1;
+}
+
+function supportsTokenProcessingPage() {
+  return detectChain() !== null || isGlobalFilteredListingPage();
+}
+
+function extractTokenInfo(href, chain = null) {
+  if (!href) {
+    return null;
+  }
+
+  const chainsToCheck = chain ? [chain] : SUPPORTED_CHAINS;
+
+  for (const supportedChain of chainsToCheck) {
+    const match = href.match(new RegExp(`/${supportedChain}/([A-Za-z0-9]+)`));
+    if (!match) {
+      continue;
+    }
+
+    const tokenId = match[1];
+    if (tokenId.length < MIN_TOKEN_ID_LENGTH) {
+      continue;
+    }
+
+    if (EXCLUDED_TOKEN_PATHS.some(path => href.toLowerCase().includes(path))) {
+      continue;
+    }
+
+    return { chain: supportedChain, tokenId };
+  }
+
+  const tokenMatch = href.match(/\/token\/([A-Za-z0-9]+)/);
+  if (tokenMatch && tokenMatch[1].length >= MIN_TOKEN_ID_LENGTH) {
+    return { chain: chain || 'solana', tokenId: tokenMatch[1] };
+  }
+
+  return null;
+}
 
 // Detect current chain from URL
 function detectChain() {
@@ -79,13 +127,14 @@ function detectChain() {
 function isNewPairsPage() {
   // Support both new-pairs pages and main chain listing pages
   return location.href.includes('/new-pairs/') ||
-         /\/[^\/]+(\?|$)/.test(location.pathname); // matches /solana or /ethereum etc.
+         /\/[^\/]+(\?|$)/.test(location.pathname) || // matches /solana or /ethereum etc.
+         isGlobalFilteredListingPage();
 }
 
 function checkMatchingTokens() {
   const currentChain = detectChain();
 
-  if (!currentChain) {
+  if (!supportsTokenProcessingPage()) {
     // Silent skip if not on a chain page - this is normal for some DexScreener pages
     // Only log if we're actually on dexscreener.com
     if (location.href.includes('dexscreener.com')) {
@@ -130,10 +179,12 @@ function processTokens(currentChain) {
   // CRITICAL: Only process tokens on listing pages, not on token detail pages
   // Token detail pages have URLs like /solana/TOKENID (single token ID in path)
   const currentUrl = location.href;
-  const tokenDetailPagePattern = new RegExp(`/${currentChain}/[A-Za-z0-9]{20,}(?:[?#]|$)`);
-  if (tokenDetailPagePattern.test(currentUrl)) {
-    // We're on a token detail page - don't process tokens here
-    return;
+  if (currentChain) {
+    const tokenDetailPagePattern = new RegExp(`/${currentChain}/[A-Za-z0-9]{20,}(?:[?#]|$)`);
+    if (tokenDetailPagePattern.test(currentUrl)) {
+      // We're on a token detail page - don't process tokens here
+      return;
+    }
   }
 
   // Clean up old successfully processed tokens (older than timeout)
@@ -157,14 +208,11 @@ function processTokens(currentChain) {
     const processedTokens = new Set(); // Track tokens processed in this call
     let messageCount = 0;
 
-    // Known non-token page identifiers to exclude
-    const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
-
     // Clean up old pending messages (older than 60 seconds) to allow retry if needed
     const PENDING_MESSAGE_TIMEOUT = 60000; // 60 seconds
-    for (const [tokenId, timestamp] of tokensWithPendingMessages.entries()) {
+    for (const [tokenKey, timestamp] of tokensWithPendingMessages.entries()) {
       if (now - timestamp > PENDING_MESSAGE_TIMEOUT) {
-        tokensWithPendingMessages.delete(tokenId);
+        tokensWithPendingMessages.delete(tokenKey);
       }
     }
 
@@ -173,114 +221,90 @@ function processTokens(currentChain) {
 
     tokenLinks.forEach(link => {
       const href = link.getAttribute('href');
-
-      // Try multiple patterns to extract token ID
-      let tokenId = null;
-
-      // Pattern 1: /solana/TOKENID
-      let match = href.match(`/${currentChain}/([A-Za-z0-9]+)`);
-      if (match) {
-        tokenId = match[1];
-
-        // CRITICAL FIX: Validate tokenId length - real token IDs are long
-        // Exclude short strings like "moonit", "watchlist", etc.
-        if (tokenId && tokenId.length < 20) {
-          // Token IDs are typically 30-50+ characters
-          // Short strings are navigation links, not tokens
-          tokenId = null;
-        }
-
-        // Also check if it's a known excluded path
-        if (tokenId && excludedPaths.some(path => href.toLowerCase().includes(path))) {
-          tokenId = null;
-        }
+      const tokenInfo = extractTokenInfo(href, currentChain);
+      if (!tokenInfo) {
+        return;
       }
 
-      // Pattern 2: /token/SOMEID (some pages use /token/)
-      if (!tokenId) {
-        match = href.match(/\/token\/([A-Za-z0-9]+)/);
-        if (match) {
-          tokenId = match[1];
-          if (tokenId && tokenId.length < 20) {
-            tokenId = null;
-          }
+      const { chain: chainForToken, tokenId } = tokenInfo;
+      const tokenKey = getTokenTrackingKey(chainForToken, tokenId);
+
+      // Only process each token once per check
+      if (!processedTokens.has(tokenKey)) {
+        processedTokens.add(tokenKey);
+
+        // CRITICAL FIX 1: Check if we've already successfully processed this token recently
+        // This prevents reprocessing the same token multiple times
+        if (successfullyProcessedTokens.has(tokenKey)) {
+          return; // Skip - already processed recently
         }
-      }
 
-      if (tokenId) {
-        // Only process each token once per check
-        if (!processedTokens.has(tokenId)) {
-          processedTokens.add(tokenId);
+        // CRITICAL FIX 2: Check if we've already sent a message for this token
+        // This prevents duplicate tab opening when processTokens is called multiple times
+        if (tokensWithPendingMessages.has(tokenKey)) {
+          return; // Skip - message already pending
+        }
 
-          // CRITICAL FIX 1: Check if we've already successfully processed this token recently
-          // This prevents reprocessing the same token multiple times
-          if (successfullyProcessedTokens.has(tokenId)) {
-            return; // Skip - already processed recently
+        // CRITICAL FIX 3: Check if token is currently being checked (prevents concurrent checks)
+        if (tokensBeingChecked.has(tokenKey)) {
+          return; // Skip - already checking
+        }
+
+        // Mark token as being checked BEFORE async call (prevents race conditions)
+        tokensBeingChecked.add(tokenKey);
+
+        // Check cooldown status from background
+        chrome.runtime.sendMessage({
+          action: 'checkTokenCooldown',
+          tokenId: tokenId,
+          chain: chainForToken
+        }, (cooldownResponse) => {
+          // Remove from being checked when response arrives
+          tokensBeingChecked.delete(tokenKey);
+
+          if (chrome.runtime.lastError) {
+            console.error('Error checking token cooldown:', chrome.runtime.lastError);
+            return;
           }
 
-          // CRITICAL FIX 2: Check if we've already sent a message for this token
-          // This prevents duplicate tab opening when processTokens is called multiple times
-          if (tokensWithPendingMessages.has(tokenId)) {
-            return; // Skip - message already pending
+          if (cooldownResponse && cooldownResponse.isInCooldown) {
+            console.log(`⏳ Skipping token ${tokenId} on ${chainForToken} - still in cooldown (verified by background)`);
+            // Mark as successfully processed (even though skipped, we don't want to check again)
+            successfullyProcessedTokens.set(tokenKey, now);
+            return;
           }
 
-          // CRITICAL FIX 3: Check if token is currently being checked (prevents concurrent checks)
-          if (tokensBeingChecked.has(tokenId)) {
-            return; // Skip - already checking
-          }
+          // Mark this token as having a pending message BEFORE sending
+          tokensWithPendingMessages.set(tokenKey, now);
+          messageCount++;
 
-          // Mark token as being checked BEFORE async call (prevents race conditions)
-          tokensBeingChecked.add(tokenId);
-
-          // Check cooldown status from background
-          chrome.runtime.sendMessage({ action: 'checkTokenCooldown', tokenId: tokenId }, (cooldownResponse) => {
-            // Remove from being checked when response arrives
-            tokensBeingChecked.delete(tokenId);
-
+          // Token is ready, proceed with opening tab
+          chrome.runtime.sendMessage({
+            action: 'tokenMatchesFilter',
+            tokenId: tokenId,
+            chain: chainForToken
+          }, (response) => {
             if (chrome.runtime.lastError) {
-              console.error('Error checking token cooldown:', chrome.runtime.lastError);
+              console.error('Error sending message:', chrome.runtime.lastError);
+              // Remove from pending on error so it can be retried
+              tokensWithPendingMessages.delete(tokenKey);
               return;
             }
-
-            if (cooldownResponse && cooldownResponse.isInCooldown) {
-              console.log(`⏳ Skipping token ${tokenId} - still in cooldown (verified by background)`);
-              // Mark as successfully processed (even though skipped, we don't want to check again)
-              successfullyProcessedTokens.set(tokenId, now);
-              return;
+            if (response && response.success && response.timestamp && response.cooldownMs) {
+              // Tab successfully opened - remove from pending (tab is now tracked by background)
+              tokensWithPendingMessages.delete(tokenKey);
+              openedTokensData.set(tokenKey, { timestamp: response.timestamp, cooldownMs: response.cooldownMs });
+              // Mark as successfully processed
+              successfullyProcessedTokens.set(tokenKey, now);
+              updateCountdownDisplays();
+            } else if (response && !response.success) {
+              // Tab not opened (e.g., duplicate or error) - remove from pending
+              tokensWithPendingMessages.delete(tokenKey);
+              // Still mark as processed to avoid immediate retry
+              successfullyProcessedTokens.set(tokenKey, now);
             }
-
-            // Mark this token as having a pending message BEFORE sending
-            tokensWithPendingMessages.set(tokenId, now);
-            messageCount++;
-
-            // Token is ready, proceed with opening tab
-            chrome.runtime.sendMessage({
-              action: 'tokenMatchesFilter',
-              tokenId: tokenId,
-              chain: currentChain
-            }, (response) => {
-              if (chrome.runtime.lastError) {
-                console.error('Error sending message:', chrome.runtime.lastError);
-                // Remove from pending on error so it can be retried
-                tokensWithPendingMessages.delete(tokenId);
-                return;
-              }
-              if (response && response.success && response.timestamp && response.cooldownMs) {
-                // Tab successfully opened - remove from pending (tab is now tracked by background)
-                tokensWithPendingMessages.delete(tokenId);
-                openedTokensData.set(tokenId, { timestamp: response.timestamp, cooldownMs: response.cooldownMs });
-                // Mark as successfully processed
-                successfullyProcessedTokens.set(tokenId, now);
-                updateCountdownDisplays();
-              } else if (response && !response.success) {
-                // Tab not opened (e.g., duplicate or error) - remove from pending
-                tokensWithPendingMessages.delete(tokenId);
-                // Still mark as processed to avoid immediate retry
-                successfullyProcessedTokens.set(tokenId, now);
-              }
-            });
           });
-        }
+        });
       }
     });
 
@@ -347,7 +371,8 @@ function findTokenLinks(chain, forceRefresh = false) {
   const links = new Map();
 
   // Known non-token page identifiers to exclude
-  const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
+  const excludedPaths = EXCLUDED_TOKEN_PATHS;
+  const chainsToMatch = chain ? [chain] : SUPPORTED_CHAINS;
 
   // OPTIMIZATION: Get all links once and filter, instead of multiple querySelectorAll calls
   const allLinks = document.querySelectorAll('a[href]');
@@ -380,21 +405,27 @@ function findTokenLinks(chain, forceRefresh = false) {
     }
 
     // Strategy 1: Direct chain links
-    if (href.includes(`/${chain}/`) && !excludedPaths.some(path => href.toLowerCase().includes(path))) {
-      const match = href.match(`/${chain}/([A-Za-z0-9]+)`);
-      if (match && match[1].length >= 20) {
-        // Only add if we haven't seen this href before (prevents duplicate links for same token)
-        if (!links.has(href)) {
-          links.set(href, link);
+    for (const supportedChain of chainsToMatch) {
+      if (href.includes(`/${supportedChain}/`) && !excludedPaths.some(path => href.toLowerCase().includes(path))) {
+        const match = href.match(`/${supportedChain}/([A-Za-z0-9]+)`);
+        if (match && match[1].length >= MIN_TOKEN_ID_LENGTH) {
+          // Only add if we haven't seen this href before (prevents duplicate links for same token)
+          if (!links.has(href)) {
+            links.set(href, link);
+          }
+          break;
         }
-        return; // Found, skip to next link
       }
+    }
+
+    if (links.has(href)) {
+      return;
     }
 
     // Strategy 2: Token links
     if (href.includes('/token/')) {
       const match = href.match(/\/token\/([A-Za-z0-9]+)/);
-      if (match && match[1].length >= 20) {
+      if (match && match[1].length >= MIN_TOKEN_ID_LENGTH) {
         // Only add if we haven't seen this href before (prevents duplicate links for same token)
         if (!links.has(href)) {
           links.set(href, link);
@@ -413,31 +444,8 @@ function findTokenLinks(chain, forceRefresh = false) {
 
 // Get token ID from a link element
 function getTokenIdFromLink(link, chain) {
-  const href = link.getAttribute('href');
-  if (!href) return null;
-
-  // Known non-token page identifiers to exclude
-  const excludedPaths = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
-
-  // Try multiple patterns to extract token ID
-  let match = href.match(`/${chain}/([A-Za-z0-9]+)`);
-  if (match) {
-    let tokenId = match[1];
-    // Validate tokenId length - real token IDs are long
-    if (tokenId && tokenId.length >= 20 && !excludedPaths.some(path => href.toLowerCase().includes(path))) {
-      return tokenId;
-    }
-  }
-
-  match = href.match(/\/token\/([A-Za-z0-9]+)/);
-  if (match) {
-    let tokenId = match[1];
-    if (tokenId && tokenId.length >= 20) {
-      return tokenId;
-    }
-  }
-
-  return null;
+  const tokenInfo = extractTokenInfo(link.getAttribute('href'), chain);
+  return tokenInfo ? tokenInfo.tokenId : null;
 }
 
 // Fetch opened tokens data from background
@@ -450,8 +458,8 @@ function fetchOpenedTokens() {
 
     openedTokensData.clear();
     if (response && response.tokens) {
-      response.tokens.forEach(({ tokenId, timestamp, cooldownMs }) => {
-        openedTokensData.set(tokenId, { timestamp, cooldownMs });
+      response.tokens.forEach(({ tokenId, chain, timestamp, cooldownMs }) => {
+        openedTokensData.set(getTokenTrackingKey(chain, tokenId), { timestamp, cooldownMs });
       });
     }
 
@@ -899,8 +907,8 @@ function updateCountdownDisplays() {
   isUpdatingDOM = true;
 
   try {
-  const currentChain = detectChain();
-    if (!currentChain) {
+    const currentChain = detectChain();
+    if (!supportsTokenProcessingPage()) {
       return;
     }
 
@@ -914,15 +922,18 @@ function updateCountdownDisplays() {
       return;
     }
 
-    tokenLinks.forEach((link, index) => {
-    const tokenId = getTokenIdFromLink(link, currentChain);
+    tokenLinks.forEach((link) => {
+      const tokenInfo = extractTokenInfo(link.getAttribute('href'), currentChain);
+      if (!tokenInfo) {
+        return;
+      }
 
-    if (!tokenId) return;
+      const tokenKey = getTokenTrackingKey(tokenInfo.chain, tokenInfo.tokenId);
 
       // Only show timer for tokens that are in cooldown
-      if (isTokenInCooldown(tokenId)) {
+      if (isTokenInCooldown(tokenKey)) {
         try {
-          addCountdownTimer(link, tokenId);
+          addCountdownTimer(link, tokenKey);
         } catch (error) {
           console.error('❌ Error in addCountdownTimer:', error);
         }
@@ -1066,12 +1077,13 @@ if (document.readyState === 'loading') {
 function init() {
   const currentUrl = location.href;
   const detectedChain = detectChain();
+  const tokenProcessingEnabled = supportsTokenProcessingPage();
 
   console.log('DexScreener extension content script loaded');
   console.log('📍 Current URL:', currentUrl);
-  console.log('🔗 Detected Chain:', detectedChain || 'None');
+  console.log('🔗 Detected Chain:', detectedChain || (isGlobalFilteredListingPage() ? 'all (filtered homepage)' : 'None'));
 
-  if (detectedChain) {
+  if (tokenProcessingEnabled) {
     // Run initial token check immediately (no delay for faster detection)
     setTimeout(() => {
       console.log('🔍 Running initial token check...');
@@ -1128,7 +1140,7 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     const enabled = changes.extensionEnabled.newValue !== false;
     const currentChain = detectChain();
 
-    if (enabled && currentChain) {
+    if (enabled && supportsTokenProcessingPage()) {
       console.log('✅ Extension enabled - starting immediate token processing');
       // Clear cache and immediately check for tokens
       invalidateTokenCache();
@@ -1144,8 +1156,7 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 // Listen for manual activation messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'activateTokenProcessing') {
-    const currentChain = detectChain();
-    if (currentChain) {
+    if (supportsTokenProcessingPage()) {
       console.log('✅ Manual activation triggered - starting immediate token processing');
       // Clear cache and immediately check for tokens
       invalidateTokenCache();
