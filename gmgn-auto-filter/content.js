@@ -79,10 +79,17 @@ function isListingPage() {
 
 // Column header labels for dynamic index detection
 const COLUMN_LABEL_PATTERNS = {
-  oneMin: ['1m%'],
-  fiveMin: ['5m%'],
-  oneHour: ['1h%']
+  oneMin: ['1m%', '1m %', '1m'],
+  fiveMin: ['5m%', '5m %', '5m'],
+  oneHour: ['1h%', '1h %', '1h']
 };
+
+const HEADER_CELL_SELECTORS = [
+  '#GlobalScrollDomId .g-table-header table thead tr th',
+  '.g-table-header table thead tr th',
+  'main table thead tr th',
+  'table thead tr th'
+];
 
 // Cache for dynamically detected column indices
 let cachedColumnIndices = null;
@@ -105,6 +112,50 @@ function headerMatchesPatterns(normalizedText, patterns) {
   return patterns.some(pattern => normalizedText.includes(pattern.toLowerCase()));
 }
 
+function headerRowHasPercentColumns(headerCells) {
+  if (!headerCells || headerCells.length === 0) {
+    return false;
+  }
+
+  return Array.from(headerCells).some(headerCell => {
+    const normalizedText = normalizeHeaderText(headerCell.textContent);
+    return Object.values(COLUMN_LABEL_PATTERNS).some(patterns =>
+      headerMatchesPatterns(normalizedText, patterns)
+    );
+  });
+}
+
+function findHeaderCells() {
+  for (const selector of HEADER_CELL_SELECTORS) {
+    const headerCells = document.querySelectorAll(selector);
+    if (headerCells.length > 0 && headerRowHasPercentColumns(headerCells)) {
+      return headerCells;
+    }
+  }
+
+  // GMGN now uses native <table> rows; locate the table that contains token links
+  const tokenLink = document.querySelector('a[href*="/token/"]');
+
+  if (tokenLink) {
+    const table = tokenLink.closest('table');
+    if (table) {
+      const headerCells = table.querySelectorAll('thead tr th');
+      if (headerCells.length > 0) {
+        return headerCells;
+      }
+    }
+  }
+
+  for (const selector of HEADER_CELL_SELECTORS) {
+    const headerCells = document.querySelectorAll(selector);
+    if (headerCells.length > 0) {
+      return headerCells;
+    }
+  }
+
+  return [];
+}
+
 function getColumnIndices() {
   const now = Date.now();
   if (cachedColumnIndices && (now - columnIndexCacheTimestamp) < COLUMN_INDEX_CACHE_DURATION) {
@@ -117,12 +168,7 @@ function getColumnIndices() {
     oneHour: null
   };
 
-  const headerSelector = '#GlobalScrollDomId .g-table-header table thead tr th';
-  let headerCells = document.querySelectorAll(headerSelector);
-
-  if (!headerCells || headerCells.length === 0) {
-    headerCells = document.querySelectorAll('.g-table-header table thead tr th');
-  }
+  const headerCells = findHeaderCells();
 
   headerCells.forEach((headerCell, idx) => {
     const normalizedText = normalizeHeaderText(headerCell.textContent);
@@ -148,13 +194,16 @@ function getCellByColumnIndex(row, columnIndex) {
     return null;
   }
 
-  try {
-    const directChildren = row.querySelectorAll(':scope > div');
-    if (directChildren.length >= columnIndex) {
-      return directChildren[columnIndex - 1];
+  const cellSelectors = [':scope > td', ':scope > th', ':scope > div'];
+  for (const selector of cellSelectors) {
+    try {
+      const cells = row.querySelectorAll(selector);
+      if (cells.length >= columnIndex) {
+        return cells[columnIndex - 1];
+      }
+    } catch (error) {
+      console.log(`⚠️ Error querying ${selector}:`, error);
     }
-  } catch (error) {
-    console.log('⚠️ Error querying direct div children:', error);
   }
 
   const fallbackChildren = row.children;
@@ -162,7 +211,7 @@ function getCellByColumnIndex(row, columnIndex) {
     return fallbackChildren[columnIndex - 1];
   }
 
-  return row.querySelector(`div:nth-child(${columnIndex})`);
+  return null;
 }
 
 function extractPercentValueFromCell(cell) {
@@ -584,8 +633,11 @@ function findTokenData(chain, forceRefresh = false) {
     // Make sure it's a real token ID (long enough)
     if (tokenId.length < 20) return;
 
-    // Find the parent row
-    let row = link.closest('tr') || link.closest('[class*="row"]');
+    // Find the parent row (GMGN now uses native table rows: table > tbody > tr > td)
+    let row = link.closest('tr');
+    if (!row) {
+      row = link.closest('[class*="row"]');
+    }
 
     if (row && isElementVisible(row)) {
       // Only add if we haven't seen this token ID yet
