@@ -20,10 +20,74 @@ async function loadSettings() {
   console.log('Settings loaded:', settings);
 }
 
+// Save openedTokens to storage (persists across service worker restarts)
+async function saveOpenedTokens() {
+  try {
+    const tokensObj = {};
+    for (const [key, timestamp] of openedTokens.entries()) {
+      tokensObj[key] = timestamp;
+    }
+    await chrome.storage.local.set({ openedTokens: tokensObj });
+    console.log(`💾 Saved ${openedTokens.size} tokens to storage`);
+  } catch (error) {
+    console.error('Error saving openedTokens to storage:', error);
+  }
+}
+
+// Load openedTokens from storage (restores after service worker restart)
+async function loadOpenedTokens() {
+  try {
+    const data = await chrome.storage.local.get(['openedTokens']);
+    if (data.openedTokens) {
+      openedTokens.clear();
+      for (const [key, timestamp] of Object.entries(data.openedTokens)) {
+        openedTokens.set(key, timestamp);
+      }
+      console.log(`📂 Loaded ${openedTokens.size} tokens from storage`);
+
+      const now = Date.now();
+      const cooldownPeriod = settings.cooldownMinutes * 60 * 1000;
+      let cleanedCount = 0;
+      for (const [key, timestamp] of openedTokens.entries()) {
+        if (now - timestamp > cooldownPeriod) {
+          openedTokens.delete(key);
+          cleanedCount++;
+        }
+      }
+      if (cleanedCount > 0) {
+        console.log(`🧹 Cleaned up ${cleanedCount} expired tokens on load`);
+        await saveOpenedTokens();
+      }
+    }
+  } catch (error) {
+    console.error('Error loading openedTokens from storage:', error);
+  }
+}
+
+// Periodic cleanup of expired tokens from storage
+async function periodicCleanup() {
+  const now = Date.now();
+  const cooldownPeriod = settings.cooldownMinutes * 60 * 1000;
+  let cleanedCount = 0;
+
+  for (const [key, timestamp] of openedTokens.entries()) {
+    if (now - timestamp > cooldownPeriod) {
+      openedTokens.delete(key);
+      cleanedCount++;
+    }
+  }
+
+  if (cleanedCount > 0) {
+    console.log(`🧹 Periodic cleanup: removed ${cleanedCount} expired tokens`);
+    await saveOpenedTokens();
+  }
+}
+
 // Initialize extension
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('DexScreener Extension installed');
   await loadSettings();
+  await loadOpenedTokens();
 });
 
 // Listen for settings changes
@@ -31,8 +95,15 @@ chrome.storage.onChanged.addListener(() => {
   loadSettings();
 });
 
-// Initialize settings on startup
-loadSettings();
+// Initialize settings and tokens on startup
+(async () => {
+  await loadSettings();
+  await loadOpenedTokens();
+
+  setInterval(() => {
+    periodicCleanup();
+  }, 5 * 60 * 1000);
+})();
 
 let openedFilterUrls = new Set(); // Track opened filter URLs
 
@@ -213,6 +284,27 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     // The token will be removed from openedTokens after cooldown period expires
 
     console.log(`🗑️ Tab closed: ${tokenId} (tab tracking removed, cooldown maintained)`);
+
+    const message = {
+      action: 'tokenTabClosed',
+      tokenId: tokenId
+    };
+
+    try {
+      chrome.runtime.sendMessage(message).catch(() => {});
+    } catch (e) {
+      // Ignore errors if popup is not open
+    }
+
+    try {
+      chrome.tabs.query({ url: 'https://*.dexscreener.com/*' }, (tabs) => {
+        tabs.forEach(tab => {
+          chrome.tabs.sendMessage(tab.id, message).catch(() => {});
+        });
+      });
+    } catch (e) {
+      // Ignore errors
+    }
   }
 });
 
@@ -321,6 +413,7 @@ async function openTokenTab(tokenId, chain = 'solana') {
       if (tab.url === tokenUrl) {
         console.log(`Token ${tokenId} (${chain}) already open`);
         openedTokens.set(cooldownKey, now);
+        await saveOpenedTokens();
         return true; // Tab already open, consider it successful
       }
     }
@@ -342,6 +435,7 @@ async function openTokenTab(tokenId, chain = 'solana') {
     // Open new tab and store the mapping - active: true to auto-focus the new tab
     const createdTab = await chrome.tabs.create({ url: tokenUrl, active: true });
     openedTokens.set(cooldownKey, now);
+    await saveOpenedTokens();
     tokenUrlToId.set(tokenUrl, tokenId);
     tabIdToTokenInfo.set(createdTab.id, { tokenId, tokenUrl, timestamp: now });
 
@@ -351,14 +445,39 @@ async function openTokenTab(tokenId, chain = 'solana') {
 
     console.log(`✅ Opened token ${tokenId} on ${chain} (${tabIdToTokenInfo.size} tabs)`);
 
+    const broadcastMessage = {
+      action: 'tokenOpened',
+      tokenId: tokenId,
+      chain: chain,
+      timestamp: now,
+      cooldownMs: cooldownPeriod
+    };
+
+    try {
+      chrome.runtime.sendMessage(broadcastMessage).catch(() => {});
+    } catch (e) {
+      // Ignore errors if popup is not open
+    }
+
+    try {
+      chrome.tabs.query({ url: 'https://*.dexscreener.com/*' }, (tabs) => {
+        tabs.forEach(tab => {
+          chrome.tabs.sendMessage(tab.id, broadcastMessage).catch(() => {});
+        });
+      });
+    } catch (e) {
+      // Ignore errors
+    }
+
     // Play notification sound to alert user
     playNotificationSound();
 
-
     // Clean up old entries (older than cooldown period)
+    let hasExpiredTokens = false;
     for (const [token, timestamp] of openedTokens.entries()) {
       if (now - timestamp > cooldownPeriod) {
         openedTokens.delete(token);
+        hasExpiredTokens = true;
         // Clean up from URL mapping as well
         for (const [url, id] of tokenUrlToId.entries()) {
           if (id === token) {
@@ -373,6 +492,9 @@ async function openTokenTab(tokenId, chain = 'solana') {
         }
         console.log(`🗑️ Removed expired token from cache: ${token}`);
       }
+    }
+    if (hasExpiredTokens) {
+      await saveOpenedTokens();
     }
 
     return true; // Successfully opened tab

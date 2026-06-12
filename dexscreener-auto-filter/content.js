@@ -1153,7 +1153,7 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
   }
 });
 
-// Listen for manual activation messages from popup
+// Listen for messages from popup and background
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'activateTokenProcessing') {
     if (supportsTokenProcessingPage()) {
@@ -1169,6 +1169,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: false, reason: 'no_chain' });
     }
     return true; // Keep message channel open for async response
+  }
+
+  if (request.action === 'tokenOpened') {
+    const tokenKey = getTokenTrackingKey(request.chain, request.tokenId);
+    openedTokensData.set(tokenKey, {
+      timestamp: request.timestamp,
+      cooldownMs: request.cooldownMs
+    });
+    updateCountdownDisplays();
+  } else if (request.action === 'tokenTabClosed') {
+    fetchOpenedTokens();
   }
 });
 

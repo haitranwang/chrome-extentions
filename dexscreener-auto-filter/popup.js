@@ -1,5 +1,8 @@
 // Popup script for settings
 
+let openedTokensData = new Map(); // key -> {timestamp, cooldownMs, chain?, tokenId?}
+let cooldownUpdateInterval = null;
+
 // Supabase configuration
 const SUPABASE_URL = 'https://putcecldtpverondjprx.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB1dGNlY2xkdHB2ZXJvbmRqcHJ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2Mzk0NjQsImV4cCI6MjA3NzIxNTQ2NH0.mNcGdDw_3F3MLT1jG0iX4LF-ffKtgsHII4SCOJqIBwY';
@@ -20,6 +23,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   loadSettings();
   loadStats();
+  loadCooldownTimers();
+  startCooldownUpdates();
   setupTabs();
   loadCurrentFilter();
   loadFavorites();
@@ -44,6 +49,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (resetBtn) resetBtn.addEventListener('click', resetSettings);
   if (extensionEnabled) extensionEnabled.addEventListener('change', handleExtensionToggle);
   if (soundEnabled) soundEnabled.addEventListener('change', handleSoundToggle);
+
+  chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'tokenOpened') {
+      const key = request.chain ? `${request.chain}:${request.tokenId}` : request.tokenId;
+      openedTokensData.set(key, {
+        timestamp: request.timestamp,
+        cooldownMs: request.cooldownMs,
+        chain: request.chain,
+        tokenId: request.tokenId
+      });
+      updateCooldownDisplay();
+      loadStats();
+    } else if (request.action === 'tokenTabClosed') {
+      loadCooldownTimers();
+      loadStats();
+    }
+  });
 
   console.log('All event listeners attached');
 });
@@ -215,6 +237,105 @@ function loadStats() {
       }
     });
   });
+}
+
+function getTokenTrackingKey(chain, tokenId) {
+  return chain ? `${chain}:${tokenId}` : tokenId;
+}
+
+function loadCooldownTimers() {
+  chrome.runtime.sendMessage({ action: 'getOpenedTokens' }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error('Error fetching opened tokens:', chrome.runtime.lastError);
+      return;
+    }
+
+    openedTokensData.clear();
+    if (response && response.tokens) {
+      response.tokens.forEach(({ tokenId, chain, timestamp, cooldownMs }) => {
+        const key = getTokenTrackingKey(chain, tokenId);
+        openedTokensData.set(key, { timestamp, cooldownMs, chain, tokenId });
+      });
+    }
+
+    updateCooldownDisplay();
+  });
+}
+
+function formatCooldownTime(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours > 0) {
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+function updateCooldownDisplay() {
+  const container = document.getElementById('cooldownTimersContainer');
+  if (!container) return;
+
+  const now = Date.now();
+  const activeCooldowns = [];
+
+  for (const [key, data] of openedTokensData.entries()) {
+    if (data && data.timestamp && data.cooldownMs) {
+      const elapsed = now - data.timestamp;
+      const remaining = data.cooldownMs - elapsed;
+
+      if (remaining > 0) {
+        const remainingSeconds = Math.floor(remaining / 1000);
+        const tokenId = data.tokenId || key.split(':').pop();
+        const chain = data.chain || (key.includes(':') ? key.split(':')[0] : null);
+        const displayId = chain
+          ? `${chain}:${tokenId.substring(0, 6)}...`
+          : `${tokenId.substring(0, 8)}...`;
+        const fullLabel = chain ? `${chain}/${tokenId}` : tokenId;
+
+        activeCooldowns.push({
+          displayId,
+          fullLabel,
+          remainingSeconds,
+          remainingMs: remaining
+        });
+      }
+    }
+  }
+
+  activeCooldowns.sort((a, b) => a.remainingMs - b.remainingMs);
+
+  if (activeCooldowns.length === 0) {
+    container.innerHTML = '<div style="color: #b3b3b3; font-size: 11px; text-align: center; padding: 8px;">No tokens in cooldown</div>';
+    return;
+  }
+
+  let html = '<div style="max-height: 150px; overflow-y: auto;">';
+  activeCooldowns.forEach(({ displayId, fullLabel, remainingSeconds }) => {
+    const timeStr = formatCooldownTime(remainingSeconds);
+    html += `
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; margin-bottom: 4px; background: #1a1a1a; border-radius: 4px; border: 1px solid #3a3a3a;">
+        <span style="font-size: 10px; color: #b3b3b3; font-family: monospace;" title="${fullLabel}">${displayId}</span>
+        <span style="font-size: 11px; font-weight: 600; color: #4ade80; font-family: monospace;">${timeStr}</span>
+      </div>
+    `;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function startCooldownUpdates() {
+  if (cooldownUpdateInterval) {
+    clearInterval(cooldownUpdateInterval);
+  }
+
+  cooldownUpdateInterval = setInterval(() => {
+    updateCooldownDisplay();
+  }, 1000);
+
+  setInterval(() => {
+    loadCooldownTimers();
+  }, 30000);
 }
 
 // Show status message (for settings tab)
