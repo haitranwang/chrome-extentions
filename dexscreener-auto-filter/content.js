@@ -56,14 +56,31 @@ function watchForTokens() {
   return observer;
 }
 
-// Supported blockchain chains
-const SUPPORTED_CHAINS = ['solana', 'bsc', 'base', 'ethereum', 'pulsechain', 'polygon', 'ton',
-  'hyperliquid', 'sui', 'avalanche', 'worldchain', 'abstract', 'xrpl', 'arbitrum', 'hyperevm', 'near', 'sonic'];
-const EXCLUDED_TOKEN_PATHS = ['moonit', 'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio', 'multicharts'];
+// Site paths that are NOT blockchain chain slugs (denylist for dynamic detection)
+const RESERVED_SITE_PATHS = new Set([
+  'new-pairs', 'top-gainers', 'top-losers', 'watchlist', 'portfolio',
+  'multicharts', 'moonit', 'token', 'search', 'alerts'
+]);
 const MIN_TOKEN_ID_LENGTH = 20;
+const CHAIN_SLUG_PATTERN = /^[a-z0-9]+$/;
+const TOKEN_ID_PATTERN = /^[A-Za-z0-9]+$/;
 
 function getTokenTrackingKey(chain, tokenId) {
   return chain ? `${chain}:${tokenId}` : tokenId;
+}
+
+function isValidChainSlug(segment) {
+  if (!segment) return false;
+  const slug = segment.toLowerCase();
+  return CHAIN_SLUG_PATTERN.test(slug) && !RESERVED_SITE_PATHS.has(slug);
+}
+
+function isValidTokenId(tokenId) {
+  return !!tokenId && tokenId.length >= MIN_TOKEN_ID_LENGTH && TOKEN_ID_PATTERN.test(tokenId);
+}
+
+function getPathSegments(pathname) {
+  return pathname.split('/').filter(Boolean);
 }
 
 function isGlobalFilteredListingPage() {
@@ -80,47 +97,57 @@ function extractTokenInfo(href, chain = null) {
     return null;
   }
 
-  const chainsToCheck = chain ? [chain] : SUPPORTED_CHAINS;
-
-  for (const supportedChain of chainsToCheck) {
-    const match = href.match(new RegExp(`/${supportedChain}/([A-Za-z0-9]+)`));
-    if (!match) {
-      continue;
+  let segments;
+  try {
+    const url = new URL(href, location.origin);
+    // Ignore external links
+    if (url.origin !== location.origin && !url.hostname.includes('dexscreener.com')) {
+      return null;
     }
-
-    const tokenId = match[1];
-    if (tokenId.length < MIN_TOKEN_ID_LENGTH) {
-      continue;
-    }
-
-    if (EXCLUDED_TOKEN_PATHS.some(path => href.toLowerCase().includes(path))) {
-      continue;
-    }
-
-    return { chain: supportedChain, tokenId };
+    segments = getPathSegments(url.pathname);
+  } catch {
+    segments = getPathSegments(href.split('?')[0].split('#')[0]);
   }
 
-  const tokenMatch = href.match(/\/token\/([A-Za-z0-9]+)/);
-  if (tokenMatch && tokenMatch[1].length >= MIN_TOKEN_ID_LENGTH) {
-    return { chain: chain || 'solana', tokenId: tokenMatch[1] };
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const first = segments[0].toLowerCase();
+  const second = segments[1];
+
+  // /{chain}/{tokenId}
+  if (isValidChainSlug(first) && isValidTokenId(second)) {
+    if (chain && first !== chain.toLowerCase()) {
+      return null;
+    }
+    return { chain: first, tokenId: second };
+  }
+
+  // /token/{tokenId}
+  if (first === 'token' && isValidTokenId(second)) {
+    return { chain: chain || 'solana', tokenId: second };
   }
 
   return null;
 }
 
-// Detect current chain from URL
+// Detect current chain dynamically from URL pathname (no hardcoded chain list)
 function detectChain() {
-  const url = location.href;
-  for (const chain of SUPPORTED_CHAINS) {
-    // Match patterns like:
-    // - /new-pairs/solana
-    // - /solana/tokenId (token detail page)
-    // - /solana (chain listing page with filters)
-    if (url.includes(`/new-pairs/${chain}`) || url.includes(`/${chain}/`) || url.match(`/${chain}[?/]`)) {
-      return chain;
-    }
+  const segments = getPathSegments(location.pathname);
+  if (segments.length === 0) {
+    return null;
   }
-  return null;
+
+  // /new-pairs/{chain}
+  if (segments[0].toLowerCase() === 'new-pairs') {
+    const chain = segments[1]?.toLowerCase();
+    return isValidChainSlug(chain) ? chain : null;
+  }
+
+  // /{chain} or /{chain}/{tokenId}
+  const maybeChain = segments[0].toLowerCase();
+  return isValidChainSlug(maybeChain) ? maybeChain : null;
 }
 
 // Check if we're on a new-pairs page OR main listing page
@@ -370,10 +397,6 @@ function findTokenLinks(chain, forceRefresh = false) {
   // Use Map to track unique hrefs (to avoid duplicate links for same token)
   const links = new Map();
 
-  // Known non-token page identifiers to exclude
-  const excludedPaths = EXCLUDED_TOKEN_PATHS;
-  const chainsToMatch = chain ? [chain] : SUPPORTED_CHAINS;
-
   // OPTIMIZATION: Get all links once and filter, instead of multiple querySelectorAll calls
   const allLinks = document.querySelectorAll('a[href]');
 
@@ -404,34 +427,9 @@ function findTokenLinks(chain, forceRefresh = false) {
       return;
     }
 
-    // Strategy 1: Direct chain links
-    for (const supportedChain of chainsToMatch) {
-      if (href.includes(`/${supportedChain}/`) && !excludedPaths.some(path => href.toLowerCase().includes(path))) {
-        const match = href.match(`/${supportedChain}/([A-Za-z0-9]+)`);
-        if (match && match[1].length >= MIN_TOKEN_ID_LENGTH) {
-          // Only add if we haven't seen this href before (prevents duplicate links for same token)
-          if (!links.has(href)) {
-            links.set(href, link);
-          }
-          break;
-        }
-      }
-    }
-
-    if (links.has(href)) {
-      return;
-    }
-
-    // Strategy 2: Token links
-    if (href.includes('/token/')) {
-      const match = href.match(/\/token\/([A-Za-z0-9]+)/);
-      if (match && match[1].length >= MIN_TOKEN_ID_LENGTH) {
-        // Only add if we haven't seen this href before (prevents duplicate links for same token)
-        if (!links.has(href)) {
-          links.set(href, link);
-        }
-        return;
-      }
+    // Dynamic match: /{chain}/{tokenId} or /token/{tokenId}
+    if (extractTokenInfo(href, chain) && !links.has(href)) {
+      links.set(href, link);
     }
   });
 
@@ -1028,7 +1026,7 @@ function detectUrlChange() {
   // Only process dexscreener.com URLs
   if (!currentUrl.includes('dexscreener.com')) return;
 
-  // Skip token detail pages (check all supported chains)
+  // Skip token detail pages (e.g. /solana/TOKENID)
   const detectedChain = detectChain();
   if (detectedChain && currentUrl.match(`/${detectedChain}/([A-Za-z0-9]+)$`)) return;
 
