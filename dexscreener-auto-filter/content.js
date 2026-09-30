@@ -64,6 +64,8 @@ const RESERVED_SITE_PATHS = new Set([
 const MIN_TOKEN_ID_LENGTH = 20;
 const CHAIN_SLUG_PATTERN = /^[a-z0-9]+$/;
 const TOKEN_ID_PATTERN = /^[A-Za-z0-9]+$/;
+// Short pool IDs used by some chains, e.g. NEAR: /near/refv1-8674
+const SHORT_PAIR_ID_PATTERN = /^[A-Za-z0-9]+-\d+$/;
 
 function getTokenTrackingKey(chain, tokenId) {
   return chain ? `${chain}:${tokenId}` : tokenId;
@@ -76,7 +78,15 @@ function isValidChainSlug(segment) {
 }
 
 function isValidTokenId(tokenId) {
-  return !!tokenId && tokenId.length >= MIN_TOKEN_ID_LENGTH && TOKEN_ID_PATTERN.test(tokenId);
+  if (!tokenId) return false;
+  return (tokenId.length >= MIN_TOKEN_ID_LENGTH && TOKEN_ID_PATTERN.test(tokenId)) ||
+    SHORT_PAIR_ID_PATTERN.test(tokenId);
+}
+
+// Token detail pages look like /{chain}/{tokenId}
+function isTokenDetailPage() {
+  const segments = getPathSegments(location.pathname);
+  return segments.length >= 2 && isValidChainSlug(segments[0]) && isValidTokenId(segments[1]);
 }
 
 function getPathSegments(pathname) {
@@ -205,13 +215,8 @@ function processTokens(currentChain) {
 
   // CRITICAL: Only process tokens on listing pages, not on token detail pages
   // Token detail pages have URLs like /solana/TOKENID (single token ID in path)
-  const currentUrl = location.href;
-  if (currentChain) {
-    const tokenDetailPagePattern = new RegExp(`/${currentChain}/[A-Za-z0-9]{20,}(?:[?#]|$)`);
-    if (tokenDetailPagePattern.test(currentUrl)) {
-      // We're on a token detail page - don't process tokens here
-      return;
-    }
+  if (isTokenDetailPage()) {
+    return;
   }
 
   // Clean up old successfully processed tokens (older than timeout)
@@ -1027,8 +1032,8 @@ function detectUrlChange() {
   if (!currentUrl.includes('dexscreener.com')) return;
 
   // Skip token detail pages (e.g. /solana/TOKENID)
+  if (isTokenDetailPage()) return;
   const detectedChain = detectChain();
-  if (detectedChain && currentUrl.match(`/${detectedChain}/([A-Za-z0-9]+)$`)) return;
 
   // Check if this is a filter URL (has query parameters)
   const hasQueryParams = currentUrl.includes('?');
