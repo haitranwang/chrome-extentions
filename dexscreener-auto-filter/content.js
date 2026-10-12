@@ -540,6 +540,29 @@ function isTokenInCooldown(tokenId) {
 // Track timers being created to prevent race conditions
 const timersBeingCreated = new Set();
 
+// DexScreener rows are <a> > grid; the grid's first cell holds the token name.
+// Class names are hashed, so locate cells by structure.
+function findTokenCell(link) {
+  const legacyCell = link.querySelector('.ds-dex-table-row-base-token-name');
+  if (legacyCell) return legacyCell;
+  const grid = [...link.children].find(el => el.children.length > 4);
+  return grid ? grid.firstElementChild : null;
+}
+
+// Remove timers whose row is gone, belongs to another token, or left cooldown
+function removeStaleTimers() {
+  document.querySelectorAll('.ds-token-timer').forEach(timer => {
+    const tokenKey = timer.getAttribute('data-token-id');
+    const ownerLink = timer.closest('a[href]');
+    const ownerInfo = ownerLink ? extractTokenInfo(ownerLink.getAttribute('href')) : null;
+    const ownerKey = ownerInfo ? getTokenTrackingKey(ownerInfo.chain, ownerInfo.tokenId) : null;
+
+    if (!tokenKey || ownerKey !== tokenKey || !isTokenInCooldown(tokenKey)) {
+      timer.remove();
+    }
+  });
+}
+
 // Add countdown timer to a token row - now displays detection time countdown
 function addCountdownTimer(link, tokenId) {
   // Only show countdown timers on new-pairs pages
@@ -712,91 +735,15 @@ function addCountdownTimer(link, tokenId) {
     flex-shrink: 0;
   `;
 
-  // Try multiple insertion strategies to insert inline with token name
-  let inserted = false;
-
-  // Strategy 1: Insert after ds-dex-table-row-base-token-name-text inside ds-dex-table-row-base-token-name
-  try {
-    // Find the parent row first, then search for token elements within it
-    const tableRow = link.closest('.ds-dex-table-row');
-    const tokenNameContainer = tableRow ? tableRow.querySelector('.ds-dex-table-row-base-token-name') : link.closest('.ds-dex-table-row-base-token-name');
-    const tokenNameText = tableRow ? tableRow.querySelector('.ds-dex-table-row-base-token-name-text') : link.closest('.ds-dex-table-row-base-token-name-text');
-
-    if (tokenNameContainer && tokenNameText) {
-      // Insert timer right after the token name text element
-      tokenNameText.parentNode.insertBefore(timer, tokenNameText.nextSibling);
-      console.log('✅ Inserted timer after .ds-dex-table-row-base-token-name-text for token:', tokenId);
-      inserted = true;
-    } else if (tokenNameContainer) {
-      // Fallback: insert at end of token name container
-      tokenNameContainer.appendChild(timer);
-      console.log('✅ Inserted timer inside .ds-dex-table-row-base-token-name (no text element found) for token:', tokenId);
-      inserted = true;
-    } else {
-      console.log('⚠️ Strategy 1: Could not find token container. tableRow:' + tableRow + ', tokenNameContainer:' + tokenNameContainer + ' for token:', tokenId);
-    }
-  } catch (e) {
-    console.log('❌ Strategy 1 failed:', e);
-  }
-
-  // Strategy 2: Find parent span/div of the link and insert after link
-  if (!inserted) {
-    try {
-      // Find the immediate parent container of the link
-      let parentContainer = link.parentElement;
-      if (parentContainer && parentContainer.tagName !== 'TD') {
-        // Insert after the link inside its parent
-        if (link.nextSibling) {
-          parentContainer.insertBefore(timer, link.nextSibling);
-        } else {
-          parentContainer.appendChild(timer);
-        }
-        inserted = true;
-      }
-    } catch (e) {
-      // Silent failure
-    }
-  }
-
-  // Strategy 3: Insert directly after the link element
-  if (!inserted) {
-    try {
-      if (link.nextSibling) {
-        link.parentNode.insertBefore(timer, link.nextSibling);
-        inserted = true;
-      } else if (link.parentNode) {
-        link.parentNode.appendChild(timer);
-        inserted = true;
-      }
-    } catch (e) {
-      // Silent failure
-    }
-  }
-
-  // Strategy 4: Fallback - find any nearby container and insert
-  if (!inserted) {
-    try {
-      const tdCell = link.closest('td');
-      if (tdCell) {
-        // Try to find the token name wrapper div
-        const tokenWrapper = tdCell.querySelector('.ds-dex-table-row-base-token-name');
-        if (tokenWrapper) {
-          tokenWrapper.appendChild(timer);
-          inserted = true;
-        } else {
-          tdCell.appendChild(timer);
-          inserted = true;
-        }
-      }
-    } catch (e) {
-      // Silent failure
-    }
-  }
-
-  if (!inserted) {
+  // Timers must live inside the row link: DexScreener (React) removes rows on filter
+  // changes, and anything inserted next to a row is left behind as a frozen badge.
+  const tokenCell = findTokenCell(link);
+  if (!tokenCell) {
     timersBeingCreated.delete(tokenId);
     return;
   }
+  const rankLabel = [...tokenCell.children].find(el => /^#\d+$/.test(el.textContent.trim()));
+  tokenCell.insertBefore(timer, rankLabel ? rankLabel.nextSibling : tokenCell.firstChild);
 
   // Initial update with same logic as update above
   const tokenData = openedTokensData.get(tokenId);
@@ -915,8 +862,9 @@ function updateCountdownDisplays() {
       return;
     }
 
-    // Clean up any duplicate timers first
+    // Clean up any duplicate or stale timers first
     cleanupDuplicateTimers();
+    removeStaleTimers();
 
     // Find all token links - force refresh to get latest
     const tokenLinks = findTokenLinks(currentChain, true);
