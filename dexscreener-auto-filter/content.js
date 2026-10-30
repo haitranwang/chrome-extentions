@@ -89,6 +89,62 @@ function isTokenDetailPage() {
   return segments.length >= 2 && isValidChainSlug(segments[0]) && isValidTokenId(segments[1]);
 }
 
+// DexScreener charts default to UTC. Asia/Ho_Chi_Minh is the UTC+7 entry in the chart menu.
+const CHART_TIMEZONE = 'Asia/Ho_Chi_Minh';
+let chartTimezoneTimer = null;
+
+function applyChartTimezone() {
+  if (!isTokenDetailPage()) return;
+
+  if (chartTimezoneTimer) clearInterval(chartTimezoneTimer);
+  let attempts = 0;
+  let announced = false;
+
+  // The chart iframe appears late, and DexScreener can apply a saved UTC
+  // timezone after the first paint. Keep correcting for the first 10 seconds.
+  chartTimezoneTimer = setInterval(() => {
+    attempts += 1;
+    const frame = document.querySelector('iframe[id^="tradingview"]');
+    let chart = null;
+    let settings = null;
+
+    try {
+      const frameWindow = frame && frame.contentWindow;
+      chart = frameWindow && frameWindow.tradingViewApi && frameWindow.tradingViewApi.activeChart();
+      settings = frameWindow && frameWindow.TVSettings;
+    } catch {
+      chart = null;
+    }
+
+    const chartReady = chart && typeof chart.getTimezone === 'function' && typeof chart.setTimezone === 'function';
+    if (chartReady) {
+      try {
+        if (settings && typeof settings.getJSON === 'function' && typeof settings.setJSON === 'function') {
+          const props = settings.getJSON('chartproperties');
+          if (props && props.timezone !== CHART_TIMEZONE) {
+            props.timezone = CHART_TIMEZONE;
+            settings.setJSON('chartproperties', props);
+          }
+        }
+        if (chart.getTimezone() !== CHART_TIMEZONE) {
+          chart.setTimezone(CHART_TIMEZONE);
+          if (!announced) {
+            announced = true;
+            console.log('🕐 Chart timezone set to UTC+7');
+          }
+        }
+      } catch (error) {
+        console.error('Failed to set chart timezone:', error);
+      }
+    }
+
+    if (attempts >= 20) {
+      clearInterval(chartTimezoneTimer);
+      chartTimezoneTimer = null;
+    }
+  }, 500);
+}
+
 function getPathSegments(pathname) {
   return pathname.split('/').filter(Boolean);
 }
@@ -979,8 +1035,12 @@ function detectUrlChange() {
   // Only process dexscreener.com URLs
   if (!currentUrl.includes('dexscreener.com')) return;
 
-  // Skip token detail pages (e.g. /solana/TOKENID)
-  if (isTokenDetailPage()) return;
+  // Chart pages are not filter listings. Still switch the chart clock to UTC+7.
+  if (isTokenDetailPage()) {
+    lastUrl = currentUrl;
+    applyChartTimezone();
+    return;
+  }
   const detectedChain = detectChain();
 
   // Check if this is a filter URL (has query parameters)
@@ -1034,6 +1094,10 @@ function init() {
   console.log('📍 Current URL:', currentUrl);
   console.log('🔗 Detected Chain:', detectedChain || (isGlobalFilteredListingPage() ? 'all (filtered homepage)' : 'None'));
 
+  if (isTokenDetailPage()) {
+    applyChartTimezone();
+  }
+
   if (tokenProcessingEnabled) {
     // Run initial token check immediately (no delay for faster detection)
     setTimeout(() => {
@@ -1081,6 +1145,9 @@ window.addEventListener('beforeunload', () => {
   }
   if (countdownInterval) {
     clearInterval(countdownInterval);
+  }
+  if (chartTimezoneTimer) {
+    clearInterval(chartTimezoneTimer);
   }
   cachedTokenLinks = null; // Clear cache on unload
 });
